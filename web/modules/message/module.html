@@ -1,6 +1,6 @@
 <section class="panel message-module">
     <div class="card">
-        <h2>Send a Message</h2>
+        <h2>Send a message</h2>
         <p class="page-intro">Send a picture, a short note, or both. It will stay on screen for 30 seconds.</p>
         <form id="message-form" method="POST" action="/api/v1/display/message" data-module-handles-submit="true">
             <label for="message-image-choice">Picture</label>
@@ -14,8 +14,8 @@
             <p id="message-text-help" class="small muted">0 / 180 characters</p>
 
             <div class="oled-preview-wrap">
-                <div class="card-title-row">
-                    <strong>Clock preview</strong>
+                <div class="subsection-title-row">
+                    <h3>Clock preview</h3>
                     <span id="message-preview-state" class="badge">Updating</span>
                 </div>
                 <div class="oled-canvas-shell">
@@ -54,7 +54,7 @@
 
             <div id="message-send-status" class="message-send-status hidden" role="status"></div>
             <div class="message-actions">
-                <button id="message-submit" class="btn ok" type="submit">Send Message</button>
+                <button id="message-submit" class="btn ok" type="submit">Send message</button>
                 <button id="message-clear" class="btn alt" type="button">Clear</button>
             </div>
         </form>

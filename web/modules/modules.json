@@ -6,7 +6,8 @@
       "group": "Everyday",
       "enabled": true,
       "default": true,
-      "order": 10
+      "order": 10,
+      "css": false
     },
     {
       "id": "alarms",
@@ -41,21 +42,24 @@
       "name": "Stories",
       "group": "Everyday",
       "enabled": true,
-      "order": 50
+      "order": 50,
+      "css": false
     },
     {
       "id": "images",
       "name": "Day Images",
       "group": "Everyday",
       "enabled": true,
-      "order": 60
+      "order": 60,
+      "css": false
     },
     {
       "id": "bedtime-images",
       "name": "Bedtime Images",
       "group": "Everyday",
       "enabled": true,
-      "order": 70
+      "order": 70,
+      "css": false
     },
     {
       "id": "display",
@@ -69,7 +73,8 @@
       "name": "System",
       "group": "Settings",
       "enabled": true,
-      "order": 90
+      "order": 90,
+      "css": false
     },
     {
       "id": "log",

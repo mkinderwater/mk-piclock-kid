@@ -1,4 +1,4 @@
-import {audioTrackFacts} from '/assets/js/audio-library.js?v=1.8.1';
+import {audioTrackFacts} from '/assets/js/audio-library.js?v=1.9.14-rpi-zero-r3';
 
 export async function mount(ctx) {
     const renderStatus = status => {
@@ -30,23 +30,23 @@ export async function mount(ctx) {
                     const facts = audioTrackFacts(track, {channels: false, layer: false});
                     const label = track.display || track.title || track.file;
                     return `
-                    <div class="mini-card story-card">
-                        <div class="story-details">
+                    <div class="mini-card media-library-card">
+                        <div class="media-library-details">
                             <div class="font-name">${ctx.html(track.title || track.file)}</div>
-                            ${track.artist ? `<div class="story-artist">${ctx.html(track.artist)}</div>` : ''}
-                            ${facts.length ? `<div class="story-facts">${facts.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
-                            <div class="small muted story-file">${ctx.html(track.file)}${track.id3 ? ' · ID3 tags' : ''}</div>
+                            ${track.artist ? `<div class="media-library-artist">${ctx.html(track.artist)}</div>` : ''}
+                            ${facts.length ? `<div class="media-library-facts">${facts.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
+                            <div class="small muted media-library-file">${ctx.html(track.file)}${track.id3 ? ' · ID3 tags' : ''}</div>
                         </div>
-                        <div class="mini-actions">
+                        <div class="media-library-actions">
                             <button class="btn ok small-btn" type="button" data-story-play="${ctx.html(track.file)}" data-story-label="${ctx.html(label)}">Play</button>
                             <button class="btn small-btn" type="button" data-story-stop>Stop</button>
                             <button class="btn danger small-btn" type="button" data-story-delete="${ctx.html(track.file)}" data-story-label="${ctx.html(label)}">Delete</button>
                         </div>
                     </div>`;
                 }).join('')
-                : '<p class="small">No story MP3 files yet.</p>';
+                : '<div class="empty-state">No story MP3 files yet.</div>';
         } catch (_) {
-            ctx.$('#story-list').innerHTML = '<p class="small">Could not load stories.</p>';
+            ctx.$('#story-list').innerHTML = '<div class="empty-state error-state">Could not load stories.</div>';
         }
     };
 

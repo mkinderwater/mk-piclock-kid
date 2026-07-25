@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "mk-piclock API",
-    "version": "1.25",
-    "description": "Local HTTP API for mk-piclock 1.8.1. A simple optional plaintext password can protect API routes on the trusted home network."
+    "version": "1.26",
+    "description": "Local HTTP API for mk-piclock 1.9.14-rpi-zero-r3. A simple optional plaintext password can protect API routes on the trusted home network."
   },
   "servers": [
     {
@@ -446,7 +446,7 @@
     },
     "/api/v1/assets/fonts": {
       "get": {
-        "summary": "List fonts",
+        "summary": "List built-in, Linux system, and uploaded fonts",
         "tags": [
           "Assets"
         ],
@@ -467,7 +467,7 @@
     },
     "/api/v1/assets/fonts/file": {
       "get": {
-        "summary": "Read uploaded font",
+        "summary": "Read a Linux system or uploaded font",
         "tags": [
           "Assets"
         ],
@@ -488,9 +488,20 @@
           {
             "name": "file",
             "in": "query",
-            "required": true,
+            "required": false,
+            "description": "Uploaded font filename.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "required": false,
+            "description": "Opaque system font key returned by GET /api/v1/assets/fonts.",
+            "schema": {
+              "type": "string",
+              "pattern": "^system:[0-9a-fA-F]{16}$"
             }
           }
         ]
@@ -1781,10 +1792,12 @@
                   "oled_font": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 3
+                    "maximum": 4,
+                    "description": "Built-in OLED font: 0 Seven Segment, 1 Seven Thin, 2 Pixel, 3 Pixel Bold, 4 Linux default fallback."
                   },
                   "oled_font_file": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Uploaded font filename or opaque system font key returned by GET /api/v1/assets/fonts."
                   },
                   "oled_font_size": {
                     "type": "integer",

@@ -16,15 +16,30 @@ API_CPPFLAGS = $(CPPFLAGS) $(MHD_CFLAGS) -I/usr/include/freetype2 -I/usr/include
 API_CFLAGS = $(C_STANDARD) $(WARNINGS) $(CFLAGS)
 API_LIBS ?= $(if $(strip $(MHD_LIBS)),$(MHD_LIBS),-lmicrohttpd) -lpng -lfreetype -lmpg123 -lmp3lame -pthread
 
-.PHONY: all clean install uninstall
+.PHONY: all build prepare-build clean install uninstall
 
-all: mk-piclock-core mk-piclock-api
+all: prepare-build
+	@$(MAKE) --no-print-directory build
 
-mk-piclock-core: mk-piclock.c led_control.c util.c ipc_protocol.h asset_format.h led_control.h util.h
-	$(CC) $(CORE_CPPFLAGS) $(CORE_CFLAGS) mk-piclock.c led_control.c util.c $(LDFLAGS) $(CORE_LIBS) -o $@
+build: mk-piclock-core mk-piclock-api
 
-mk-piclock-api: mk-piclock-api.c asset_store.c music_jobs.c util.c ipc_protocol.h asset_format.h asset_store.h music_jobs.h util.h
-	$(CC) $(API_CPPFLAGS) $(API_CFLAGS) mk-piclock-api.c asset_store.c music_jobs.c util.c $(LDFLAGS) $(API_LIBS) -o $@
+prepare-build:
+	@future_files="$$(find . -type f \
+		! -path './.git/*' \
+		! -name 'mk-piclock-core' \
+		! -name 'mk-piclock-api' \
+		-newermt 'now + 2 seconds' -print 2>/dev/null)"; \
+	if [ -n "$$future_files" ]; then \
+		echo "Normalizing future-dated files before build..."; \
+		printf '%s\n' "$$future_files" | while IFS= read -r file; do touch "$$file"; done; \
+		rm -f mk-piclock-core mk-piclock-api; \
+	fi
+
+mk-piclock-core: mk-piclock.c led_control.c font_catalog.c util.c hardware_profile.h ipc_protocol.h asset_format.h led_control.h font_catalog.h util.h
+	$(CC) $(CORE_CPPFLAGS) $(CORE_CFLAGS) mk-piclock.c led_control.c font_catalog.c util.c $(LDFLAGS) $(CORE_LIBS) -o $@
+
+mk-piclock-api: mk-piclock-api.c asset_store.c music_jobs.c font_catalog.c util.c hardware_profile.h ipc_protocol.h asset_format.h asset_store.h music_jobs.h font_catalog.h util.h
+	$(CC) $(API_CPPFLAGS) $(API_CFLAGS) mk-piclock-api.c asset_store.c music_jobs.c font_catalog.c util.c $(LDFLAGS) $(API_LIBS) -o $@
 
 
 install: all

@@ -54,7 +54,7 @@ export async function mount(ctx) {
         const storyText = String(status.story_message || 'STORY MODE!').trim() || 'STORY MODE!';
         ctx.setText('#status-audio', status.alarm_active
             ? `Alarm playing at ${status.alarm_volume_percent || 0}%`
-            : (storyIntro ? `Story Mode: ${storyText}` : (status.audio_playing ? `Playing ${track || 'music'}` : 'Audio stopped')));
+            : (storyIntro ? `Story mode: ${storyText}` : (status.audio_playing ? `Playing ${track || 'music'}` : 'None')));
         ctx.setText('#status-volume', status.alarm_active
             ? `Alarm ${status.alarm_volume_percent || 0}%`
             : `${status.global_volume || 0}%`);
@@ -73,7 +73,7 @@ export async function mount(ctx) {
         ctx.setText('#summary-clock', status.oled_ok ? `Working · ${status.time || ''}` : 'Screen unavailable');
         ctx.setText('#summary-sound', status.alarm_active
             ? `Alarm playing · ${status.alarm_volume_percent || 0}%`
-            : (storyIntro ? `Story Mode · ${storyText}` : (status.audio_playing ? `Playing ${track || 'music'}` : 'None')));
+            : (storyIntro ? `Story mode · ${storyText}` : (status.audio_playing ? `Playing ${track || 'music'}` : 'None')));
         ctx.setText('#summary-bedtime', status.bedtime_enabled
             ? `${ctx.timeValue(status.bedtime_start_hour, status.bedtime_start_min)} to ${ctx.timeValue(status.bedtime_end_hour, status.bedtime_end_min)}`
             : 'Not scheduled');

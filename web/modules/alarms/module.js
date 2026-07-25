@@ -16,7 +16,7 @@ export async function mount(ctx) {
         const list = ctx.$('#alarm-list');
         const alarms = Array.isArray(status?.alarms) ? status.alarms : [];
         if (!alarms.length) {
-            list.innerHTML = '<div class="card"><p>No alarms are configured.</p></div>';
+            list.innerHTML = '<div class="card empty-state">No alarms are configured.</div>';
             return;
         }
         list.innerHTML = alarms.map(alarm => `
@@ -25,16 +25,16 @@ export async function mount(ctx) {
                 <form method="POST" action="/api/v1/config/alarms" data-busy-text="Saving alarm ${alarm.id}..." data-success-text="Alarm ${alarm.id} saved" data-error-text="Alarm ${alarm.id} could not be saved">
                     <input type="hidden" name="id" value="${alarm.id}">
                     <div class="field-row">
-                        <div><label>Alarm</label><select name="enabled"><option value="1"${alarm.enabled ? ' selected' : ''}>On</option><option value="0"${!alarm.enabled ? ' selected' : ''}>Off</option></select></div>
-                        <div><label>Time</label><input type="time" name="time" value="${ctx.timeValue(alarm.hour, alarm.min)}"></div>
+                        <div><label for="alarm-${alarm.id}-enabled">Alarm</label><select id="alarm-${alarm.id}-enabled" name="enabled"><option value="1"${alarm.enabled ? ' selected' : ''}>On</option><option value="0"${!alarm.enabled ? ' selected' : ''}>Off</option></select></div>
+                        <div><label for="alarm-${alarm.id}-time">Time</label><input id="alarm-${alarm.id}-time" type="time" name="time" value="${ctx.timeValue(alarm.hour, alarm.min)}"></div>
                     </div>
                     <label>Days</label>${dayCheckboxes(alarm.weekdays)}
-                    <label>Wake-up music</label><select name="music_file">${musicOptions(alarm.music_file)}</select>
+                    <label for="alarm-${alarm.id}-music">Wake-up music</label><select id="alarm-${alarm.id}-music" name="music_file">${musicOptions(alarm.music_file)}</select>
                     <div class="field-row">
-                        <div><label>Starting volume</label><input type="number" name="start_volume" min="0" max="100" value="${alarm.start_volume}"></div>
-                        <div><label>Final volume</label><input type="number" name="end_volume" min="0" max="100" value="${alarm.end_volume}"></div>
+                        <div><label for="alarm-${alarm.id}-start-volume">Starting volume</label><input id="alarm-${alarm.id}-start-volume" type="number" name="start_volume" min="0" max="100" value="${alarm.start_volume}"></div>
+                        <div><label for="alarm-${alarm.id}-end-volume">Final volume</label><input id="alarm-${alarm.id}-end-volume" type="number" name="end_volume" min="0" max="100" value="${alarm.end_volume}"></div>
                     </div>
-                    <button class="btn" type="submit">Save Alarm</button>
+                    <button class="btn" type="submit">Save alarm</button>
                 </form>
             </div>`).join('');
     };
@@ -48,7 +48,7 @@ export async function mount(ctx) {
             musicFiles = (music.tracks || []).map(track => track.file);
             render(status || ctx.status.get());
         } catch (_) {
-            ctx.$('#alarm-list').innerHTML = '<div class="card"><p>Could not load alarms.</p></div>';
+            ctx.$('#alarm-list').innerHTML = '<div class="card empty-state error-state">Could not load alarms.</div>';
         }
     };
 

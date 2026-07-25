@@ -1,8 +1,8 @@
-import {mountImageLibrary} from '/assets/js/image-library.js?v=1.8.1';
+import {mountImageLibrary} from '/assets/js/image-library.js?v=1.9.14-rpi-zero-r3';
 
 export function mount(ctx) {
     return mountImageLibrary(ctx, {
-        heading: 'Bedtime Images',
+        heading: 'Bedtime images',
         labelSingular: 'bedtime image',
         labelPlural: 'bedtime images',
         description: 'Add calm pictures used only during bedtime hours.',
@@ -12,7 +12,7 @@ export function mount(ctx) {
         deleteUrl: '/api/v1/assets/bedtime-images/delete',
         deleteAllUrl: '/api/v1/assets/bedtime-images/delete-all',
         downloadUrl: '/api/v1/assets/bedtime-images/download',
-        downloadLabel: 'Download All Bedtime PNGs',
+        downloadLabel: 'Download all bedtime PNGs',
         downloadFilename: 'mk-piclock-bedtime-images-png.zip'
     });
 }

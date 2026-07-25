@@ -1,4 +1,4 @@
-# mk-piclock HTTP API 1.25
+# mk-piclock HTTP API 1.26
 
 The GUI and add-ons use the HTTP API on port 8080.
 
@@ -7,6 +7,17 @@ http://<clock-ip>:8080/api/v1
 ```
 
 Most routes are directly available when no password is configured. When a password exists, authenticate through `/api/v1/auth/login`; the API returns a session cookie used by the GUI. The password is stored as plain text and is intended only for a trusted home network. Do not expose port 8080 to the internet.
+
+
+## Fonts
+
+```http
+GET /api/v1/assets/fonts
+GET /api/v1/assets/fonts/file?key=<system-font-key>
+GET /api/v1/assets/fonts/file?file=<uploaded-font-file>
+```
+
+The font list is rebuilt from readable `.ttf` and `.otf` files under `/usr/share/fonts` and `/usr/local/share/fonts` whenever it is requested. System fonts are returned with opaque `system:...` keys; pass the selected key back as `oled_font_file` when saving display settings. Uploaded fonts continue to use their filename.
 
 ## Optional password
 
@@ -154,7 +165,7 @@ POST /api/v1/logs/clear
 ## Compatibility
 
 ```text
-HTTP API:    1.25
+HTTP API:    1.26
 Private IPC: 16
 ```
 

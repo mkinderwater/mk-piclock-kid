@@ -18,12 +18,12 @@
                 <input id="show-song-metadata" type="checkbox" checked>
                 <span><strong>Show song name on the clock</strong><small>Long names scroll across the bottom of the screen.</small></span>
             </label>
-            <button class="btn" type="submit">Save Volume</button>
+            <button class="btn" type="submit">Save volume</button>
         </form>
     </div>
 
     <div class="card">
-        <h2>Add Music</h2>
+        <h2>Add music</h2>
         <p class="page-intro">Choose one or more MP3 files. Wait for the full batch to finish before adding more.</p>
         <form id="music-upload-form" method="POST" action="/api/v1/assets/music/upload" enctype="multipart/form-data" data-module-handles-submit="true">
             <label for="music-files">Choose songs</label>
@@ -61,27 +61,27 @@
                 </div>
             </details>
 
-            <button class="btn" type="submit">Add Music</button>
+            <button class="btn" type="submit">Add music</button>
         </form>
     </div>
 
     <div class="card hidden" id="music-processing-card">
-        <h2>Preparing Music</h2>
-        <p class="small">New uploads are blocked until every queued song is ready. Clear Queue removes waiting files, but does not stop a song already processing.</p>
+        <h2>Preparing music</h2>
+        <p class="small">New uploads are blocked until every queued song is ready. Clear queue removes waiting files, but does not stop a song already processing.</p>
         <div class="button-row">
-            <button class="btn danger small-btn" type="button" id="clear-music-queue">Clear Queue</button>
+            <button class="btn danger small-btn" type="button" id="clear-music-queue">Clear queue</button>
         </div>
         <div id="music-jobs" class="cards compact-cards"></div>
     </div>
 
     <div class="card">
-        <h2>Your Music</h2>
+        <h2>Your music</h2>
         <div id="music-list" class="cards compact-cards"></div>
         <details class="danger-details">
             <summary>Music library options</summary>
             <div class="button-row">
-                <button class="btn danger small-btn" type="button" data-music-stop>Stop Playback</button>
-                <button class="btn danger small-btn" type="button" id="delete-all-music">Delete All Music</button>
+                <button class="btn alt small-btn" type="button" data-music-stop>Stop playback</button>
+                <button class="btn danger small-btn" type="button" id="delete-all-music">Delete all music</button>
             </div>
         </details>
     </div>

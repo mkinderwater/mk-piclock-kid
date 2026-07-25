@@ -13,8 +13,8 @@
             <label for="new-web-password">New password</label>
             <input id="new-web-password" name="password" type="password" maxlength="64" autocomplete="new-password" placeholder="Enter a simple password">
             <div class="button-grid">
-                <button class="btn" type="submit">Save Password</button>
-                <button id="remove-password" class="btn alt" type="button">Remove Password</button>
+                <button class="btn" type="submit">Save password</button>
+                <button id="remove-password" class="btn alt" type="button">Remove password</button>
             </div>
         </form>
         <p class="small no-margin">No password means no prompt. The password is stored as plain text on this clock.</p>
@@ -112,17 +112,17 @@
             <tr><th>Next alarm</th><td id="diag-next-alarm">Loading...</td></tr>
             <tr><th>Last successful alarm</th><td id="diag-last-alarm">Loading...</td></tr>
         </tbody></table>
-        <a class="btn alt report-button" href="/api/v1/diagnostics/report">Download Diagnostic Report</a>
+        <div class="button-row"><a class="btn alt" href="/api/v1/diagnostics/report">Download diagnostic report</a></div>
     </div>
 
     <div class="card">
         <h2>Backup and restore</h2>
         <p class="page-intro">The backup contains settings, alarms, images, fonts, and scheduled message data. Music and stories are excluded.</p>
-        <a class="btn" href="/api/v1/backup/download">Download Backup</a>
-        <form id="restore-form" method="POST" action="/api/v1/backup/restore" enctype="multipart/form-data" data-module-handles-submit="true">
+        <a class="btn" href="/api/v1/backup/download">Download backup</a>
+        <form id="restore-form" class="form-block" method="POST" action="/api/v1/backup/restore" enctype="multipart/form-data" data-module-handles-submit="true">
             <label for="backup-file">Restore a backup</label>
             <input id="backup-file" type="file" name="backup" accept=".zip,application/zip" required>
-            <button class="btn alt" type="submit">Restore Backup</button>
+            <button class="btn alt" type="submit">Restore backup</button>
         </form>
         <p class="small no-margin">Restore replaces settings, images, and fonts. The music and story libraries are left unchanged.</p>
     </div>
@@ -133,7 +133,7 @@
         <form id="factory-reset-form" method="POST" action="/api/v1/factory-reset" data-module-handles-submit="true">
             <label for="factory-confirm">Type RESET</label>
             <input id="factory-confirm" name="confirm" autocomplete="off" required>
-            <button class="btn danger" type="submit">Factory Reset</button>
+            <button class="btn danger" type="submit">Factory reset</button>
         </form>
     </div>
 </section>

@@ -38,15 +38,20 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+#include "hardware_profile.h"
 #include "asset_store.h"
+#include "font_catalog.h"
 #include "ipc_protocol.h"
 #include "music_jobs.h"
 #include "util.h"
 
 
 #define API_NAME "mk-piclock-api"
-#define API_VERSION "1.25"
-#define PRODUCT_VERSION "1.8.1"
+#define API_VERSION "1.26"
+#define PRODUCT_VERSION MP_PRODUCT_VERSION
 #define BUILD_TIMESTAMP __DATE__ " " __TIME__
 #define DEFAULT_PUBLIC_BIND "0.0.0.0"
 #define DEFAULT_PUBLIC_PORT 8080
@@ -2942,28 +2947,104 @@ static enum MHD_Result serve_images_list(struct MHD_Connection *connection, int 
     return queue_json_builder(connection, 200, &body);
 }
 
+static void system_font_display_name(FT_Library library,
+                                     const struct mp_system_font_entry *entry,
+                                     char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (library && entry) {
+        FT_Face face = NULL;
+        if (FT_New_Face(library, entry->path, 0, &face) == 0) {
+            const char *family = face->family_name ? face->family_name : "";
+            const char *style = face->style_name ? face->style_name : "";
+            if (family[0] && style[0] && strcasecmp(style, "Regular") != 0 &&
+                strcasecmp(style, "Book") != 0)
+                snprintf(out, out_len, "%s %s", family, style);
+            else if (family[0])
+                mp_safe_str(out, out_len, family);
+            FT_Done_Face(face);
+        }
+    }
+    if (!out[0] && entry) mp_safe_str(out, out_len, entry->filename);
+}
+
 static enum MHD_Result serve_fonts_list(struct MHD_Connection *connection) {
     struct mp_ipc_asset_state state;
     if (get_asset_state(&state) != 0)
         return queue_json(connection, 503, "{\"ok\":false,\"error\":\"clock core unavailable\"}");
+
     char files[MP_ASSET_LIST_MAX][MP_ASSET_NAME_MAX];
-    int count = mp_asset_scan(MP_FONT_DIR, MP_ASSET_SCAN_FONT, files, MP_ASSET_LIST_MAX);
+    int uploaded_count = mp_asset_scan(MP_FONT_DIR, MP_ASSET_SCAN_FONT, files, MP_ASSET_LIST_MAX);
+    struct mp_system_font_entry *system_fonts = calloc(MP_SYSTEM_FONT_LIST_MAX, sizeof(*system_fonts));
+    int system_count = system_fonts ? mp_system_font_scan(system_fonts, MP_SYSTEM_FONT_LIST_MAX) : 0;
+    if (system_fonts && mp_system_font_is_key(state.selected_font)) {
+        int selected_present = 0;
+        for (int i = 0; i < system_count; i++) {
+            if (strcmp(system_fonts[i].key, state.selected_font) == 0) {
+                selected_present = 1;
+                break;
+            }
+        }
+        if (!selected_present) {
+            char selected_path[MP_SYSTEM_FONT_PATH_MAX];
+            if (mp_system_font_resolve(state.selected_font, selected_path, sizeof(selected_path)) == 0) {
+                int slot = system_count < MP_SYSTEM_FONT_LIST_MAX ? system_count++ : MP_SYSTEM_FONT_LIST_MAX - 1;
+                mp_safe_str(system_fonts[slot].key, sizeof(system_fonts[slot].key), state.selected_font);
+                mp_safe_str(system_fonts[slot].path, sizeof(system_fonts[slot].path), selected_path);
+                const char *base = strrchr(selected_path, '/');
+                mp_safe_str(system_fonts[slot].filename, sizeof(system_fonts[slot].filename), base ? base + 1 : selected_path);
+            }
+        }
+    }
+    FT_Library library = NULL;
+    (void)FT_Init_FreeType(&library);
+
+    char default_system_key[MP_SYSTEM_FONT_KEY_MAX] = "";
+    for (int i = 0; i < system_count; i++) {
+        if (strcasecmp(system_fonts[i].filename, "DejaVuSansMono.ttf") == 0) {
+            mp_safe_str(default_system_key, sizeof(default_system_key), system_fonts[i].key);
+            break;
+        }
+    }
+
     struct mp_buffer body;
-    if (mp_buffer_init(&body, 2048, MP_IPC_MAX_PAYLOAD) != 0)
+    if (mp_buffer_init(&body, 8192, MAX_API_JSON_RESPONSE) != 0) {
+        if (library) FT_Done_FreeType(library);
+        free(system_fonts);
         return queue_json(connection, 500, "{\"ok\":false,\"error\":\"allocation failed\"}");
+    }
     mp_buffer_append(&body, "{\"selected\":\"");
     mp_buffer_append_json_string(&body, state.selected_font);
     mp_buffer_appendf(&body,
-        "\",\"builtin\":%d,\"font_size\":%d,\"builtin_fonts\":["
-        "{\"id\":0,\"name\":\"Seven Segment\"},{\"id\":1,\"name\":\"Seven Thin\"},"
-        "{\"id\":2,\"name\":\"Pixel\"},{\"id\":3,\"name\":\"Pixel Bold\"}],\"uploaded_fonts\":[",
+        "\",\"builtin\":%d,\"font_size\":%d,\"default_system_key\":\"",
         state.builtin_font, state.font_size);
-    for (int i = 0; i < count && !body.failed; i++) {
+    mp_buffer_append_json_string(&body, default_system_key);
+    mp_buffer_append(&body,
+        "\",\"builtin_fonts\":["
+        "{\"id\":0,\"name\":\"Seven Segment\"},{\"id\":1,\"name\":\"Seven Thin\"},"
+        "{\"id\":2,\"name\":\"Pixel\"},{\"id\":3,\"name\":\"Pixel Bold\"}],"
+        "\"system_fonts\":[");
+    for (int i = 0; i < system_count && !body.failed; i++) {
+        char display_name[256];
+        system_font_display_name(library, &system_fonts[i], display_name, sizeof(display_name));
+        mp_buffer_appendf(&body, "%s{\"key\":\"", i ? "," : "");
+        mp_buffer_append_json_string(&body, system_fonts[i].key);
+        mp_buffer_append(&body, "\",\"name\":\"");
+        mp_buffer_append_json_string(&body, display_name);
+        mp_buffer_append(&body, "\",\"file\":\"");
+        mp_buffer_append_json_string(&body, system_fonts[i].filename);
+        mp_buffer_append(&body, "\"}");
+    }
+    mp_buffer_append(&body, "],\"uploaded_fonts\":[");
+    for (int i = 0; i < uploaded_count && !body.failed; i++) {
         mp_buffer_appendf(&body, "%s\"", i ? "," : "");
         mp_buffer_append_json_string(&body, files[i]);
         mp_buffer_append(&body, "\"");
     }
     mp_buffer_append(&body, "]}");
+
+    if (library) FT_Done_FreeType(library);
+    free(system_fonts);
     return queue_json_builder(connection, 200, &body);
 }
 
@@ -3118,11 +3199,17 @@ static enum MHD_Result serve_image_source(struct MHD_Connection *connection, int
 }
 
 static enum MHD_Result serve_font_file(struct MHD_Connection *connection) {
-    const char *file = query_value(connection, "file");
-    if (!mp_asset_safe_filename(file) || !mp_asset_has_font_ext(file))
-        return queue_json(connection, 400, "{\"ok\":false,\"error\":\"invalid font file\"}");
-    char path[768];
-    snprintf(path, sizeof(path), "%s/%s", MP_FONT_DIR, file);
+    const char *key = query_value(connection, "key");
+    char path[MP_SYSTEM_FONT_PATH_MAX];
+    if (key && key[0]) {
+        if (mp_system_font_resolve(key, path, sizeof(path)) != 0)
+            return queue_json(connection, 404, "{\"ok\":false,\"error\":\"system font not found\"}");
+    } else {
+        const char *file = query_value(connection, "file");
+        if (!mp_asset_safe_filename(file) || !mp_asset_has_font_ext(file))
+            return queue_json(connection, 400, "{\"ok\":false,\"error\":\"invalid font file\"}");
+        snprintf(path, sizeof(path), "%s/%s", MP_FONT_DIR, file);
+    }
     enum MHD_Result result = queue_file(connection, path, content_type_for_path(path), 1, 0);
     return result == MHD_NO ? queue_json(connection, 404, "{\"ok\":false,\"error\":\"font not found\"}") : result;
 }
@@ -3632,7 +3719,7 @@ static enum MHD_Result dispatch_route(struct MHD_Connection *connection,
             memset(&request, 0, sizeof(request));
             if (form_value(context, "oled_font")) {
                 request.present_mask |= MP_IPC_DISPLAY_FONT;
-                request.oled_font = (uint8_t)form_int(context, "oled_font", 0);
+                request.oled_font = (uint8_t)form_int(context, "oled_font", 4);
             }
             if (form_value(context, "oled_font_size")) {
                 request.present_mask |= MP_IPC_DISPLAY_FONT_SIZE;

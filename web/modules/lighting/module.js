@@ -75,8 +75,8 @@ function cardTemplate(scene) {
             </div>
             <div class="lighting-actions lighting-profile-actions">
                 <button class="btn alt" type="button" data-profile-reset>Reset</button>
-                <button class="btn alt" type="button" data-led-preview>Preview 10 Seconds</button>
-                <button class="btn" type="submit">Save ${scene.name}</button>
+                <button class="btn alt" type="button" data-led-preview>Preview 10 seconds</button>
+                <button class="btn" type="submit">Save ${scene.name.toLowerCase()}</button>
             </div>
         </form>`;
 }

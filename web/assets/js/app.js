@@ -19,9 +19,9 @@ let authPromise = null;
 let authResolve = null;
 let noticeTimer = null;
 const statusListeners = new Set();
-const GUI_VERSION = '1.8.1';
-const GUI_ASSET_VERSION = '1.8.1';
-const REQUIRED_API_VERSION = '1.25';
+const GUI_VERSION = '1.9.14-rpi-zero-r3';
+const GUI_ASSET_VERSION = '1.9.14-rpi-zero-r3';
+const REQUIRED_API_VERSION = '1.26';
 const oledPreviewIntensity = Array.from({length: 16}, (_, level) =>
     level === 0 ? 0 : Math.pow(level / 15, 0.48));
 const oledPreviewColours = Object.freeze({
@@ -410,18 +410,20 @@ async function loadModule(id) {
     if (!definition || current?.id === definition.id) return;
 
     current?.controller.abort();
-    current?.css.remove();
+    current?.css?.remove();
 
     const controller = new AbortController();
     const base = `/modules/${encodeURIComponent(definition.id)}`;
-    const css = document.createElement('link');
-    css.rel = 'stylesheet';
-    css.href = `${base}/module.css?v=${GUI_ASSET_VERSION}`;
-    document.head.appendChild(css);
+    const css = definition.css === false ? null : document.createElement('link');
+    if (css) {
+        css.rel = 'stylesheet';
+        css.href = `${base}/module.css?v=${GUI_ASSET_VERSION}`;
+        document.head.appendChild(css);
+    }
     current = {id: definition.id, controller, css, refresh: null};
 
     setActiveMenu(definition.id);
-    host.innerHTML = `<div class="card module-loading">Opening ${escapeHtml(definition.name)}...</div>`;
+    host.innerHTML = `<div class="card module-loading empty-state">Opening ${escapeHtml(definition.name)}...</div>`;
 
     try {
         const [html, moduleObject] = await Promise.all([
@@ -436,9 +438,9 @@ async function loadModule(id) {
         if (!controller.signal.aborted) current.refresh = mounted?.refresh || null;
     } catch (error) {
         if (controller.signal.aborted) return;
-        css.remove();
+        css?.remove();
         current = null;
-        host.innerHTML = `<div class="card module-error"><h2>This page could not open</h2><p>${escapeHtml(error.message)}</p></div>`;
+        host.innerHTML = `<div class="card module-error"><h2>This page could not open</h2><p class="no-margin">${escapeHtml(error.message)}</p></div>`;
         notice(`${definition.name} could not open`, 'warn', 3500);
     }
 }
@@ -498,7 +500,7 @@ async function start() {
         await refreshApiState();
         await openControlPanel();
     } catch (error) {
-        host.innerHTML = `<div class="card module-error"><h2>Clock controls could not open</h2><p>${escapeHtml(error.message)}</p></div>`;
+        host.innerHTML = `<div class="card module-error"><h2>Clock controls could not open</h2><p class="no-margin">${escapeHtml(error.message)}</p></div>`;
         notice(error.message || 'Clock API unavailable.', 'warn');
     }
 }

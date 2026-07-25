@@ -1,4 +1,4 @@
-# mk-piclock v1.8.1 Pinouts
+# mk-piclock v1.9.14-rpi-zero-r3 Pinouts
 
 This document covers the Raspberry Pi GPIO header, SSD1322 OLED, MAX98357A I2S amplifier, speaker, TTP223B touch sensor, and common-cathode RGB LED used by mk-piclock.
 
@@ -123,7 +123,7 @@ dtoverlay=max98357a,no-sdmode
 
 ### Audio startup click
 
-A small click when playback starts is accepted in this release. SD / EN remains unconnected, and mk-piclock does not add amplifier switching, a persistent silence stream, or other click-suppression logic.
+A small click when playback starts is accepted in this release. SD / EN remains unconnected, and mk-piclock does not add amplifier switching, a persistent silence stream, or other click-suppression logic. See `RASPBERRY_PI_SPEAKER_POP.md` for the full investigation, test history, and possible future solution.
 
 ## Speaker
 

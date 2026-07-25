@@ -1,11 +1,11 @@
-import {audioTrackFacts, formatAudioBytes} from '/assets/js/audio-library.js?v=1.8.1';
+import {audioTrackFacts, formatAudioBytes} from '/assets/js/audio-library.js?v=1.9.14-rpi-zero-r3';
 
 export async function mount(ctx) {
     const renderStatus = status => {
         if (!status) return;
         ctx.setText('#music-status', status.audio_playing ? 'Playing' : 'None');
         const metadata = [status.audio_title, status.audio_artist].filter(Boolean).join(' - ');
-        ctx.setText('#music-current', metadata || status.audio_file || '-');
+        ctx.setText('#music-current', metadata || status.audio_file || 'None');
         ctx.setValue('#global-volume', status.global_volume ?? 80);
         ctx.setText('#global-volume-value', `${status.global_volume ?? 80}%`);
         const metadataToggle = ctx.$('#show-song-metadata');
@@ -30,26 +30,26 @@ export async function mount(ctx) {
                         track.genre ? `Genre: ${track.genre}` : ''
                     ].filter(Boolean);
                     return `
-                    <div class="mini-card song-card">
-                        <div class="song-details">
+                    <div class="mini-card media-library-card">
+                        <div class="media-library-details">
                             <div class="font-name">${ctx.html(track.title || track.file)}</div>
-                            ${track.artist ? `<div class="song-artist">${ctx.html(track.artist)}</div>` : ''}
+                            ${track.artist ? `<div class="media-library-artist">${ctx.html(track.artist)}</div>` : ''}
                             ${(details.length || facts.length) ? `<details class="file-details"><summary>Song details</summary>
-                                ${details.length ? `<div class="song-tags">${details.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
-                                ${facts.length ? `<div class="song-facts">${facts.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
-                                <div class="small muted song-file">${ctx.html(track.file)}${track.id3 ? ' · ID3 tags' : ''}</div>
-                            </details>` : `<div class="small muted song-file">${ctx.html(track.file)}</div>`}
+                                ${details.length ? `<div class="media-library-tags">${details.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
+                                ${facts.length ? `<div class="media-library-facts">${facts.map(value => `<span>${ctx.html(value)}</span>`).join('')}</div>` : ''}
+                                <div class="small muted media-library-file">${ctx.html(track.file)}${track.id3 ? ' · ID3 tags' : ''}</div>
+                            </details>` : `<div class="small muted media-library-file">${ctx.html(track.file)}</div>`}
                         </div>
-                        <div class="mini-actions">
+                        <div class="media-library-actions">
                             <button class="btn ok small-btn" type="button" data-music-play="${ctx.html(track.file)}" data-music-label="${ctx.html(track.display || track.title || track.file)}">Play</button>
                             <button class="btn small-btn" type="button" data-music-stop>Stop</button>
                             <button class="btn danger small-btn" type="button" data-music-delete="${ctx.html(track.file)}" data-music-label="${ctx.html(track.display || track.title || track.file)}">Delete</button>
                         </div>
                     </div>`;
                 }).join('')
-                : '<p class="small">No processed MP3 files yet.</p>';
+                : '<div class="empty-state">No processed MP3 files yet.</div>';
         } catch (_) {
-            ctx.$('#music-list').innerHTML = '<p class="small">Could not load music.</p>';
+            ctx.$('#music-list').innerHTML = '<div class="empty-state error-state">Could not load music.</div>';
         }
     };
 
@@ -121,13 +121,13 @@ export async function mount(ctx) {
             if (fileInput) fileInput.disabled = active;
             if (uploadButton) {
                 uploadButton.disabled = active;
-                uploadButton.textContent = active ? 'Preparing Music...' : 'Add Music';
+                uploadButton.textContent = active ? 'Preparing music...' : 'Add music';
             }
             if (clearButton) clearButton.disabled = !queued;
             scheduleJobRefresh(active ? 1000 : 8000);
         } catch (_) {
             ctx.$('#music-processing-card').classList.remove('hidden');
-            ctx.$('#music-jobs').innerHTML = '<p class="small">Music preparation status could not be loaded.</p>';
+            ctx.$('#music-jobs').innerHTML = '<div class="empty-state error-state">Music preparation status could not be loaded.</div>';
             scheduleJobRefresh(8000);
         }
     };

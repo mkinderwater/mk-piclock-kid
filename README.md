@@ -1,19 +1,17 @@
-# mk-piclock v1.8.1
+# mk-piclock v1.9.14-rpi-zero-r3
 
 mk-piclock is a native C bedside alarm clock for Raspberry Pi Zero and Zero 2 W. It drives a 256x64 SSD1322 OLED, MAX98357A I2S amplifier, speaker, TTP223B touch sensor, and optional RGB LED.
 
 The project was created for my daughter Rylie. It is designed to behave like a simple bedside appliance, not a general-purpose computer.
 
-## What's new in v1.8.1
+## What's new in v1.9.14-rpi-zero-r3
 
-- Standardized every GUI card heading with the same divider, spacing, and title alignment.
-- Changed inactive sound status from `Quiet` to `None` across the GUI.
-- Added consistent spacing between RGB Lighting and Global Controls.
-- Removed the duplicate divider beneath the Web password description.
-- Added matching headings to Story playback and Activity history.
-- Updated browser asset versions so the polished GUI loads without stale cached files.
-- Retained the production display and code cleanup introduced in v1.8.0.
-- Kept HTTP API 1.25 and private IPC 16.
+- Restored sent-message artwork to the normal 96x48 clock image size.
+- Kept the artwork aligned with the `ALARM` label at X=2.
+- Added a compact 144x48 message text viewport beside the image.
+- Limited message TrueType fonts to 9px through 12px, with scale-1 fallback text.
+- Kept the browser preview and physical OLED on the same renderer and geometry.
+- Day Images and Bedtime Images remain unchanged at their existing 2:1 GUI preview size.
 
 ## Features
 
@@ -24,21 +22,26 @@ The project was created for my daughter Rylie. It is designed to behave like a s
 - Blinking colon
 - Day and bedtime image libraries
 - Automatic image rotation
-- Plain-text Wi-Fi and alarm status footer
-- Blinking `W.OFF` warning when wireless is disconnected
+- Next-alarm status in the footer
 - OLED brightness control
 - Separate bedtime schedule and brightness
 - Yellow, green, or white panel selection for browser previews
-- Built-in and uploaded TrueType or OpenType fonts
+- Built-in OLED fonts plus dynamically discovered Linux and uploaded TrueType or OpenType fonts
 - Exact 256x64 live framebuffer preview on the Home page
 
 The normal footer uses one baseline:
 
 ```text
-W.095 | ALARM ON                  FRIDAY, JULY 17 2026
+ALARM 6:00AM                    FRIDAY, JULY 24 2026
 ```
 
-The last IPv4 octet is zero-padded. The alarm label changes between `ALARM ON` and `ALARM OFF`. When `wlan0` loses carrier or its IPv4 address, `W.OFF` blinks. The clock and alarms continue locally, but the browser and network time synchronization remain unavailable until Wi-Fi returns.
+When an alarm is enabled, the footer shows the next scheduled time, such as `ALARM 6:00AM` or `ALARM 11:00PM`. In 24-hour mode it uses 24-hour time. When no future alarm is scheduled, the alarm notice is omitted.
+
+Song metadata replaces the date while music is playing, and all alarm notices are suppressed so the complete footer width is available. Short titles end at the exact date right edge. Longer titles use the full-width marquee animation. Wi-Fi details are available only through the touch-activated network diagnostics screen.
+
+When no uploaded or explicitly selected font applies, the default clock font is DejaVu Sans Mono from the standard Linux `fonts-dejavu` package. An uploaded font takes precedence and remains selected; if the selected upload is removed, another uploaded font is selected when available, otherwise the clock returns to DejaVu Sans Mono. The GUI rescans `/usr/share/fonts` and `/usr/local/share/fonts` whenever the Display page loads, so installed Linux fonts appear automatically without being copied into the application. If the chosen system font later disappears, the clock falls back to its built-in renderer.
+
+For TrueType and OpenType clocks, each character is rendered into a fixed-width off-screen slot derived from the selected font's widest visible digit. Numeric glyphs are right-anchored inside their slots, the colon remains centred, and the complete slot grid has one fixed screen origin. The final minute digit's last visible pixel lands at X=253 without moving the clock as the minutes change. This supports proportional, monospaced, italic, and unusual-bearing fonts.
 
 ### Alarms
 
@@ -58,6 +61,7 @@ When an alarm starts:
 - browser stop controls cannot dismiss the alarm
 - an unreadable or missing song falls back to the protected built-in alarm
 - the alarm stops after 30 minutes if nobody presses the sensor
+- its occurrence is committed before audio starts, so restarting or power-cycling the clock cannot replay that alarm later on the same local date
 
 The fallback alarm is installed at:
 
@@ -120,6 +124,12 @@ One future message can be pending. A new scheduled message replaces the existing
 The preview is rendered by `mk-piclock-core` using the same framebuffer, font measurements, word wrapping, image placement, centring, grayscale, and brightness rules as the physical OLED.
 
 ### Images
+
+For best results, upload artwork close to a 2:1 aspect ratio, ideally 128x64 or larger. Square images remain supported but lose their upper and lower edges when centre-cropped for the wider clock window.
+
+Day Images and Bedtime Images use the uploaded PNG as the retained original. The API creates one canonical 128x64, 8-bit grayscale `.raw` source for fast native rendering. The source remains unquantized until the clock knows the final on-screen size; it is then bilinear-resized, ordered-dithered, and converted once to the SSD1322's 16 grayscale levels. This avoids the visible loss caused by resizing an image that was already reduced to 4-bit. Older 64x64 RAW8 and packed RAW4 files are not supported. Delete the existing Day Images and Bedtime Images libraries before upgrading, then upload the PNG artwork again.
+
+The regular clock screen reserves a maximum 96x48 image window at X=2, Y=2 for an `XX:XX` clock footprint. It keeps at least two blank pixels from the screen edge, seconds line, and first visible clock pixel. An unusually wide selected font may reduce the image width rather than violating that margin.
 
 Day Images and Bedtime Images each support:
 
@@ -448,6 +458,7 @@ sudo apt install --no-install-recommends -y \
   libgpiod-dev \
   libpng-dev \
   libfreetype-dev \
+  fonts-dejavu \
   libasound2-dev \
   libmpg123-dev \
   libmp3lame-dev \
@@ -523,8 +534,8 @@ sudo journalctl -f \
 ## Versions
 
 ```text
-Product:     1.8.1
-HTTP API:    1.25
+Product:     1.9.14-rpi-zero-r3
+HTTP API:    1.26
 Private IPC: 16
 ```
 
@@ -538,3 +549,7 @@ Install the core and API from the same release, then restart both services. Inst
 - HTTP API: `ADDON_API.md`
 - OpenAPI schema: `api/openapi-v1.json`
 - Current release summary: `RELEASE_NOTES.md`
+
+### Raspberry Pi speaker pop details
+
+A short MAX98357A click can occur when a Raspberry Pi audio stream starts or stops. See `SPEAKER_POP_NOISE.md` for the test history, electrical cause, possible future SD_MODE solution, and the Banana Pi comparison.

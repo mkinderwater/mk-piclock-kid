@@ -47,16 +47,18 @@
 
 #include <gpiod.h>
 
+#include "hardware_profile.h"
 #include "ipc_protocol.h"
 #include "led_control.h"
 #include "asset_format.h"
+#include "font_catalog.h"
 #include "util.h"
 
 #define safe_str mp_safe_str
 #define write_all mp_write_full
 
 #define APP_NAME "mk-piclock-core"
-#define APP_VERSION "1.8.1"
+#define APP_VERSION MP_PRODUCT_VERSION
 
 #define LED_PROFILE(fx, level, seconds, r1, g1, b1, r2, g2, b2) \
     { .effect = (fx), .brightness = (level), .cycle_seconds = (seconds), .reserved = 0, \
@@ -76,6 +78,9 @@
 #define MESSAGE_CHIME_VOLUME_MAX 55
 #define ALARM_MAX_DURATION_SECONDS 1800
 #define FONT_DIR APP_ROOT "/assets/fonts"
+#define SYSTEM_DEFAULT_FONT_ID 4
+#define LEGACY_SYSTEM_DEFAULT_FONT_KEY "system-dejavu-sans-mono"
+#define SYSTEM_DEFAULT_FONT_PATH "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 #define CONFIG_DIR APP_ROOT "/config"
 #define CONFIG_FILE CONFIG_DIR "/clock.conf"
 #define LOG_FILE CONFIG_DIR "/event.log"
@@ -89,17 +94,26 @@
 #define OLED_H 64
 #define OLED_ROW_BYTES (OLED_W / 2)
 #define OLED_FB_BYTES ((OLED_W * OLED_H) / 2)
+#define OLED_EDGE_PADDING 2
 #define SPI_SPEED_HZ 4000000
 #define SPI_CHUNK 4096
 
-#define MESSAGE_TEXT_X 70
-#define MESSAGE_TEXT_W (OLED_W - MESSAGE_TEXT_X - 4)
+#define MESSAGE_IMAGE_X OLED_EDGE_PADDING
+#define MESSAGE_IMAGE_Y 8
+#define MESSAGE_IMAGE_WIDTH 96
+#define MESSAGE_IMAGE_HEIGHT 48
+#define MESSAGE_IMAGE_TEXT_GAP 8
+#define MESSAGE_TEXT_RIGHT_PADDING 6
+#define MESSAGE_TEXT_X (MESSAGE_IMAGE_X + MESSAGE_IMAGE_WIDTH + MESSAGE_IMAGE_TEXT_GAP)
+#define MESSAGE_TEXT_Y 8
+#define MESSAGE_TEXT_W (OLED_W - MESSAGE_TEXT_X - MESSAGE_TEXT_RIGHT_PADDING)
+#define MESSAGE_TEXT_H 48
 #define MESSAGE_MAX_LINES 3
 #define MESSAGE_LINE_CHARS 64
 #define MESSAGE_INPUT_MAX_CHARS 180
-#define MESSAGE_FALLBACK_SCALE 2
-#define MESSAGE_TTF_MIN_PX 12
-#define MESSAGE_TTF_MAX_PX 18
+#define MESSAGE_FALLBACK_SCALE 1
+#define MESSAGE_TTF_MIN_PX 9
+#define MESSAGE_TTF_MAX_PX 12
 #define MESSAGE_DEFAULT_DURATION_SECONDS 30
 #define MESSAGE_DELAY_MAX_SECONDS 60
 
@@ -128,20 +142,46 @@
 #define CLOCK_IMAGE_CHANGE_MAX_SECONDS 300
 #define BEDTIME_IMAGE_CHANGE_SECONDS 300
 #define CLOCK_TIME_Y_OFFSET -7
-#define CLOCK_IMAGE_Y_NUDGE -2
-#define CLOCK_SIDE_WIDGET_SIZE 54
-#define CLOCK_SIDE_WIDGET_X 4
 #define CLOCK_FOOTER_H 11
-#define CLOCK_FOOTER_TEXT_Y (OLED_H - 8)
-#define CLOCK_RIGHT_X (OLED_W - 2)
+#define CLOCK_FOOTER_TEXT_Y (OLED_H - 9)
+#define CLOCK_EDGE_PADDING OLED_EDGE_PADDING
+#define CLOCK_CONTENT_RIGHT_PIXEL (OLED_W - CLOCK_EDGE_PADDING - 1)
 #define CLOCK_SECONDS_LINE_Y (OLED_H - CLOCK_FOOTER_H - 1)
 #define CLOCK_SECONDS_LINE_LEVEL 12
-#define CLOCK_STATUS_TEXT_X 2
-#define CLOCK_STATUS_TEXT_GAP 6
+#define CLOCK_STATUS_TEXT_X CLOCK_EDGE_PADDING
+#define CLOCK_IMAGE_X CLOCK_STATUS_TEXT_X
+#define CLOCK_IMAGE_Y CLOCK_EDGE_PADDING
+#define CLOCK_IMAGE_MAX_WIDTH 96
+#define CLOCK_IMAGE_BOTTOM_PIXEL (CLOCK_SECONDS_LINE_Y - CLOCK_EDGE_PADDING - 1)
+#define CLOCK_IMAGE_HEIGHT (CLOCK_IMAGE_BOTTOM_PIXEL - CLOCK_IMAGE_Y + 1)
+#define CLOCK_IMAGE_FONT_GAP CLOCK_EDGE_PADDING
+#define CLOCK_STATUS_CONTENT_GAP 7
 #define SONG_METADATA_TEXT_MAX (MP_ID3_TEXT_MAX * 2 + 4)
 #define SONG_SCROLL_SPEED_PX_PER_SEC 18u
 #define SONG_SCROLL_GAP_PX 24
 #define SONG_SCROLL_FRAME_US 75000u
+
+#if CLOCK_STATUS_TEXT_X != CLOCK_EDGE_PADDING
+#error "Alarm footer left padding must use CLOCK_EDGE_PADDING"
+#endif
+#if CLOCK_IMAGE_X != CLOCK_STATUS_TEXT_X
+#error "Clock artwork and ALARM text must share the same left pixel"
+#endif
+#if MESSAGE_IMAGE_X != CLOCK_STATUS_TEXT_X
+#error "Message artwork and ALARM text must share the same left pixel"
+#endif
+#if MESSAGE_IMAGE_X != CLOCK_IMAGE_X || MESSAGE_IMAGE_Y != 8
+#error "Message artwork must preserve X=2 alignment and Y=8 placement"
+#endif
+#if MESSAGE_IMAGE_WIDTH != CLOCK_IMAGE_MAX_WIDTH || MESSAGE_IMAGE_HEIGHT != CLOCK_IMAGE_HEIGHT
+#error "Message artwork must preserve the normal 96x48 clock image viewport"
+#endif
+#if MESSAGE_TEXT_X != 106 || MESSAGE_TEXT_Y != 8 || MESSAGE_TEXT_W != 144 || MESSAGE_TEXT_H != 48
+#error "Message text viewport must remain 144x48 at X=106, Y=8"
+#endif
+#if MESSAGE_TTF_MIN_PX != 9 || MESSAGE_TTF_MAX_PX != 12 || MESSAGE_FALLBACK_SCALE != 1
+#error "Message typography must remain independent and compact"
+#endif
 
 
 #define CORE_RUNTIME_DIR "/run/mk-piclock"
@@ -152,6 +192,18 @@
 static volatile sig_atomic_t g_running = 1;
 static time_t g_start_time = 0;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_footer_alarm_label[32] = "";
+static int g_footer_content_min_x = CLOCK_STATUS_TEXT_X;
+
+struct clock_tick_cache {
+    uint8_t colon_off_fb[OLED_FB_BYTES];
+    uint8_t colon_on_fb[OLED_FB_BYTES];
+    int valid;
+};
+
+static struct clock_tick_cache g_clock_tick_cache = {
+    .valid = 0
+};
 
 struct rotating_image_state {
     char file[IMAGE_FILE_MAX];
@@ -185,9 +237,12 @@ struct alarm_slot {
     int weekdays;          /* bit 0 Sunday through bit 6 Saturday */
     int start_volume;      /* 0..100 */
     int end_volume;        /* 0..100 */
-    int fired_yday;
+    int last_fired_date;   /* local YYYYMMDD, persisted before playback starts */
     char music_file[MUSIC_FILE_MAX]; /* empty = random uploaded MP3 */
 };
+
+static time_t next_alarm_time(const struct alarm_slot alarms[MAX_ALARMS], time_t now,
+                              int *alarm_id);
 
 struct app_state {
     int display_mode;       /* 0 clock, 1 clear, 2 message, 3 diagnostics */
@@ -232,6 +287,7 @@ struct app_state {
     int alarm_active;             /* 1 only while an alarm MP3 is currently playing */
     int alarm_volume_percent;     /* current alarm ramp volume, 0..100 */
     long long last_successful_alarm;
+    int alarm_replay_guard_migrated;
     struct alarm_slot alarms[MAX_ALARMS];
     struct mp_led_profile led_profiles[MP_LED_SCENE_COUNT];
     struct mp_led_global_settings led_settings;
@@ -243,8 +299,8 @@ struct app_state {
     struct mp_led_profile led_preview_profile;
     int oled_ok;
     char clock_name[64];
-    int oled_font;         /* 0 seven, 1 seven thin, 2 pixel, 3 pixel bold */
-    char oled_font_file[128]; /* uploaded .ttf/.otf filename, empty = built-in */
+    int oled_font;         /* 0 seven, 1 seven thin, 2 pixel, 3 pixel bold, 4 Linux default */
+    char oled_font_file[128]; /* uploaded filename or system font key, empty = built-in */
     int oled_font_size;    /* TrueType pixel size */
     int clock_24h_mode;    /* 0 = 12-hour, 1 = 24-hour */
     int oled_color;        /* GUI panel colour: yellow, green, or white */
@@ -294,6 +350,7 @@ static struct app_state g_state = {
     .alarm_active = 0,
     .alarm_volume_percent = 0,
     .last_successful_alarm = 0,
+    .alarm_replay_guard_migrated = 0,
     .led_profiles = {
         [MP_LED_SCENE_ALARM] = LED_PROFILE(MP_LED_EFFECT_FADE, 70, 8, 255, 0, 0, 255, 160, 0),
         [MP_LED_SCENE_BEDTIME] = LED_PROFILE(MP_LED_EFFECT_SOLID, 3, 8, 255, 48, 0, 255, 48, 0),
@@ -312,7 +369,7 @@ static struct app_state g_state = {
     .led_preview_profile = {0},
     .oled_ok = 0,
     .clock_name = DEFAULT_CLOCK_NAME,
-    .oled_font = 0,
+    .oled_font = SYSTEM_DEFAULT_FONT_ID,
     .oled_font_file = "",
     .oled_font_size = 48,
     .clock_24h_mode = 0,
@@ -617,6 +674,16 @@ static int safe_asset_filename(const char *name) {
 }
 
 static void make_font_path(const char *file, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (file && strcmp(file, LEGACY_SYSTEM_DEFAULT_FONT_KEY) == 0) {
+        safe_str(out, out_len, SYSTEM_DEFAULT_FONT_PATH);
+        return;
+    }
+    if (mp_system_font_is_key(file)) {
+        (void)mp_system_font_resolve(file, out, out_len);
+        return;
+    }
     snprintf(out, out_len, FONT_DIR "/%s", file && *file ? file : "");
 }
 
@@ -624,6 +691,15 @@ static int clamp_int(int v, int lo, int hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static int local_date_key(const struct tm *tmv) {
+    if (!tmv) return 0;
+    int year = tmv->tm_year + 1900;
+    int month = tmv->tm_mon + 1;
+    if (year < 1970 || year > 9999 || month < 1 || month > 12 ||
+        tmv->tm_mday < 1 || tmv->tm_mday > 31) return 0;
+    return year * 10000 + month * 100 + tmv->tm_mday;
 }
 
 static int has_mp3_ext(const char *name) {
@@ -639,7 +715,8 @@ static void make_music_path(const char *file, char *out, size_t out_len) {
 
 enum asset_list_kind {
     ASSET_LIST_IMAGE_RAW = 1,
-    ASSET_LIST_MUSIC_MP3 = 2
+    ASSET_LIST_MUSIC_MP3 = 2,
+    ASSET_LIST_FONT = 3
 };
 
 static void invalidate_image_raw_cache(void) {
@@ -665,9 +742,12 @@ static int asset_file_matches_kind(const char *dir, const char *name, int kind) 
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", dir, name);
         struct stat st;
-        return stat(path, &st) == 0 && st.st_size == MP_IMAGE_RAW_BYTES;
+        return stat(path, &st) == 0 && MP_IMAGE_RAW_SIZE_VALID(st.st_size);
     }
-    return safe_asset_filename(name) && kind == ASSET_LIST_MUSIC_MP3 && has_mp3_ext(name);
+    if (!safe_asset_filename(name)) return 0;
+    if (kind == ASSET_LIST_MUSIC_MP3) return has_mp3_ext(name);
+    if (kind == ASSET_LIST_FONT) return has_font_ext(name);
+    return 0;
 }
 
 static int scan_asset_files(const char *dir, int kind, char files[][ASSET_LIST_NAME_MAX], int max_files) {
@@ -694,6 +774,48 @@ static int scan_asset_files(const char *dir, int kind, char files[][ASSET_LIST_N
     return count;
 }
 
+static int apply_default_font_selection(void) {
+    char current[sizeof(g_state.oled_font_file)];
+    int builtin;
+    pthread_mutex_lock(&g_state.lock);
+    safe_str(current, sizeof(current), g_state.oled_font_file);
+    builtin = g_state.oled_font;
+    pthread_mutex_unlock(&g_state.lock);
+
+    int current_valid = 0;
+    if (current[0] && strcmp(current, LEGACY_SYSTEM_DEFAULT_FONT_KEY) != 0) {
+        char path[MP_SYSTEM_FONT_PATH_MAX];
+        make_font_path(current, path, sizeof(path));
+        current_valid = path[0] && access(path, R_OK) == 0;
+    }
+    if (current_valid || (!current[0] && builtin != SYSTEM_DEFAULT_FONT_ID)) return 0;
+
+    char candidate[sizeof(g_state.oled_font_file)] = "";
+    char files[ASSET_LIST_MAX_FILES][ASSET_LIST_NAME_MAX];
+    int uploaded_count = scan_asset_files(FONT_DIR, ASSET_LIST_FONT, files, ASSET_LIST_MAX_FILES);
+    if (uploaded_count > 0) {
+        safe_str(candidate, sizeof(candidate), files[0]);
+    } else {
+        char system_path[MP_SYSTEM_FONT_PATH_MAX];
+        (void)mp_system_font_find_filename("DejaVuSansMono.ttf", candidate, sizeof(candidate),
+                                           system_path, sizeof(system_path));
+    }
+
+    int changed = 0;
+    pthread_mutex_lock(&g_state.lock);
+    if (strcmp(g_state.oled_font_file, current) == 0 && g_state.oled_font == builtin) {
+        if (strcmp(g_state.oled_font_file, candidate) != 0 ||
+            g_state.oled_font != SYSTEM_DEFAULT_FONT_ID) {
+            safe_str(g_state.oled_font_file, sizeof(g_state.oled_font_file), candidate);
+            g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
+            g_state.display_dirty = 1;
+            changed = 1;
+        }
+    }
+    pthread_mutex_unlock(&g_state.lock);
+    return changed;
+}
+
 static void init_alarm_defaults(void) {
     for (int i = 0; i < MAX_ALARMS; i++) {
         g_state.alarms[i].enabled = 0;
@@ -702,7 +824,7 @@ static void init_alarm_defaults(void) {
         g_state.alarms[i].weekdays = 0x7F;
         g_state.alarms[i].start_volume = 20;
         g_state.alarms[i].end_volume = 80;
-        g_state.alarms[i].fired_yday = -1;
+        g_state.alarms[i].last_fired_date = 0;
         g_state.alarms[i].music_file[0] = '\0';
     }
 }
@@ -738,8 +860,9 @@ static void reset_persistent_state_locked(void) {
     g_state.bedtime_music_enabled = 1;
     g_state.show_song_metadata = 1;
     g_state.last_successful_alarm = 0;
+    g_state.alarm_replay_guard_migrated = 1;
     safe_str(g_state.clock_name, sizeof(g_state.clock_name), DEFAULT_CLOCK_NAME);
-    g_state.oled_font = 0;
+    g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
     g_state.oled_font_file[0] = '\0';
     g_state.oled_font_size = 48;
     g_state.clock_24h_mode = 0;
@@ -773,7 +896,7 @@ static void reset_persistent_state_locked(void) {
         g_state.alarms[i].weekdays = 0x7F;
         g_state.alarms[i].start_volume = 20;
         g_state.alarms[i].end_volume = 80;
-        g_state.alarms[i].fired_yday = -1;
+        g_state.alarms[i].last_fired_date = 0;
         g_state.alarms[i].music_file[0] = '\0';
     }
 }
@@ -795,6 +918,7 @@ static void reset_persistent_state_locked(void) {
     X("oled_font_size", g_state.oled_font_size, "%d") \
     X("clock_24h_mode", g_state.clock_24h_mode, "%d") \
     X("oled_color", g_state.oled_color, "%d") \
+    X("alarm_replay_guard_migrated", g_state.alarm_replay_guard_migrated, "%d") \
     X("led_enabled", g_state.led_settings.enabled, "%d") \
     X("led_max_brightness", g_state.led_settings.max_brightness, "%d") \
     X("led_red_gain", g_state.led_settings.red_gain, "%d") \
@@ -821,6 +945,7 @@ static void reset_persistent_state_locked(void) {
         X(i, "weekdays", g_state.alarms[i].weekdays, "%d", atoi(val) & 0x7F) \
         X(i, "start_volume", g_state.alarms[i].start_volume, "%d", atoi(val)) \
         X(i, "end_volume", g_state.alarms[i].end_volume, "%d", atoi(val)) \
+        X(i, "last_fired_date", g_state.alarms[i].last_fired_date, "%d", atoi(val)) \
     }
 
 #define CONFIG_ALARM_STRING_FIELDS(X) \
@@ -959,7 +1084,17 @@ static void save_config(void) {
     if (fclose(f) != 0) ok = 0;
 
     if (ok) {
-        if (rename(tmp_path, CONFIG_FILE) != 0) unlink(tmp_path);
+        if (rename(tmp_path, CONFIG_FILE) != 0) {
+            unlink(tmp_path);
+        } else {
+            /* fsync the parent directory so the rename itself is durable before
+               an alarm begins playing and power can be removed. */
+            int dir_fd = open(CONFIG_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (dir_fd >= 0) {
+                (void)fsync(dir_fd);
+                close(dir_fd);
+            }
+        }
     } else {
         unlink(tmp_path);
     }
@@ -1076,6 +1211,7 @@ static void load_config(void) {
     g_state.bedtime_dim_percent = clamp_int(g_state.bedtime_dim_percent, 0, 100);
     g_state.bedtime_music_enabled = g_state.bedtime_music_enabled ? 1 : 0;
     if (g_state.last_successful_alarm < 0) g_state.last_successful_alarm = 0;
+    g_state.alarm_replay_guard_migrated = g_state.alarm_replay_guard_migrated ? 1 : 0;
     g_state.clock_24h_mode = g_state.clock_24h_mode ? 1 : 0;
     g_state.oled_color = clamp_int(g_state.oled_color, MP_OLED_COLOR_YELLOW, MP_OLED_COLOR_WHITE);
     for (int i = 0; i < MP_LED_SCENE_COUNT; i++)
@@ -1091,7 +1227,8 @@ static void load_config(void) {
         if (a->weekdays == 0) a->weekdays = 0x7F;
         a->start_volume = clamp_int(a->start_volume, 0, 100);
         a->end_volume = clamp_int(a->end_volume, 0, 100);
-        a->fired_yday = -1;
+        if (a->last_fired_date < 19700101 || a->last_fired_date > 99991231)
+            a->last_fired_date = 0;
         if (a->music_file[0] && (!safe_asset_filename(a->music_file) || !has_mp3_ext(a->music_file))) {
             a->music_file[0] = '\0';
         }
@@ -1132,8 +1269,35 @@ static void load_config(void) {
     }
 
     sanitize_clock_name(g_state.clock_name);
-    if (g_state.oled_font < 0 || g_state.oled_font > 3) g_state.oled_font = 0;
+    if (g_state.oled_font < 0 || g_state.oled_font > SYSTEM_DEFAULT_FONT_ID)
+        g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
     if (g_state.oled_font_size < 18 || g_state.oled_font_size > 54) g_state.oled_font_size = 48;
+}
+
+static int migrate_alarm_last_fired_dates(void) {
+    if (g_state.alarm_replay_guard_migrated) return 0;
+
+    g_state.alarm_replay_guard_migrated = 1;
+    if (g_state.last_successful_alarm <= 0) return 1;
+
+    time_t last_alarm = (time_t)g_state.last_successful_alarm;
+    struct tm alarm_tm;
+    if (!localtime_r(&last_alarm, &alarm_tm)) return 1;
+
+    int date_key = local_date_key(&alarm_tm);
+    if (date_key == 0) return 1;
+
+    pthread_mutex_lock(&g_state.lock);
+    for (int i = 0; i < MAX_ALARMS; i++) {
+        struct alarm_slot *a = &g_state.alarms[i];
+        int weekday_ok = (a->weekdays & (1 << alarm_tm.tm_wday)) != 0;
+        if (a->last_fired_date == 0 && weekday_ok &&
+            a->hour == alarm_tm.tm_hour && a->min == alarm_tm.tm_min) {
+            a->last_fired_date = date_key;
+        }
+    }
+    pthread_mutex_unlock(&g_state.lock);
+    return 1;
 }
 
 /* ---------------- OLED low level ---------------- */
@@ -1422,6 +1586,44 @@ static uint8_t oled_get_px(int x, int y) {
     return fb[idx] & 0x0F;
 }
 
+struct oled_visible_bounds {
+    int left;
+    int top;
+    int right;
+    int bottom;
+};
+
+static int oled_find_visible_bounds(int x0, int y0, int x1, int y1,
+                                    struct oled_visible_bounds *bounds) {
+    if (!bounds) return -1;
+    x0 = clamp_int(x0, 0, OLED_W - 1);
+    x1 = clamp_int(x1, 0, OLED_W - 1);
+    y0 = clamp_int(y0, 0, OLED_H - 1);
+    y1 = clamp_int(y1, 0, OLED_H - 1);
+    if (x1 < x0 || y1 < y0) return -1;
+
+    int left = OLED_W;
+    int top = OLED_H;
+    int right = -1;
+    int bottom = -1;
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (oled_get_px(x, y) == 0) continue;
+            if (x < left) left = x;
+            if (x > right) right = x;
+            if (y < top) top = y;
+            if (y > bottom) bottom = y;
+        }
+    }
+
+    if (right < left || bottom < top) return -1;
+    bounds->left = left;
+    bounds->top = top;
+    bounds->right = right;
+    bounds->bottom = bottom;
+    return 0;
+}
+
 static void draw_seconds_position_line(int second) {
     int sec = clamp_int(second, 0, 59);
     int gap_x = (sec * (OLED_W - 1)) / 59;
@@ -1446,18 +1648,65 @@ static const uint8_t oled_coverage_gamma_lut[16] = {
     4, 5, 6, 8, 9, 11, 13, 15
 };
 
-static void oled_blend_px(int x, int y, uint8_t coverage, uint8_t gray4) {
-    if (coverage == 0) return;
+static uint8_t oled_coverage_to_gray4(uint8_t coverage, uint8_t gray4);
 
-    uint8_t fg = gray4 & 0x0F;
-    if (fg == 0) return;
+static void oled_blend_px(int x, int y, uint8_t coverage, uint8_t gray4) {
+    uint8_t v = oled_coverage_to_gray4(coverage, gray4);
+    if (v > oled_get_px(x, y)) oled_set_px(x, y, v);
+}
+
+static uint8_t ft_bitmap_coverage_at(const FT_Bitmap *bm, unsigned int row, unsigned int col) {
+    if (!bm || !bm->buffer || row >= bm->rows || col >= bm->width) return 0;
+
+    int pitch = bm->pitch;
+    const uint8_t *row_data;
+    if (pitch >= 0)
+        row_data = bm->buffer + (size_t)row * (size_t)pitch;
+    else
+        row_data = bm->buffer + (size_t)(bm->rows - 1u - row) * (size_t)(-pitch);
+
+    if (bm->pixel_mode == FT_PIXEL_MODE_GRAY) return row_data[col];
+    if (bm->pixel_mode == FT_PIXEL_MODE_MONO)
+        return (row_data[col >> 3] & (0x80u >> (col & 7u))) ? 255 : 0;
+    return 0;
+}
+
+/* Find the final bitmap column that survives OLED coverage quantization. */
+static int ft_bitmap_rightmost_visible_col(const FT_Bitmap *bm) {
+    if (!bm || !bm->buffer || bm->width == 0 || bm->rows == 0) return -1;
+
+    for (int col = (int)bm->width - 1; col >= 0; col--) {
+        for (unsigned int row = 0; row < bm->rows; row++) {
+            uint8_t coverage = ft_bitmap_coverage_at(bm, row, (unsigned int)col);
+            uint8_t cov4 = (uint8_t)(((int)coverage * 15 + 127) / 255);
+            if (oled_coverage_gamma_lut[cov4] != 0) return col;
+        }
+    }
+    return -1;
+}
+
+/* Find the first bitmap column that survives OLED coverage quantization. */
+static int ft_bitmap_leftmost_visible_col(const FT_Bitmap *bm) {
+    if (!bm || !bm->buffer || bm->width == 0 || bm->rows == 0) return -1;
+
+    for (unsigned int col = 0; col < bm->width; col++) {
+        for (unsigned int row = 0; row < bm->rows; row++) {
+            uint8_t coverage = ft_bitmap_coverage_at(bm, row, col);
+            uint8_t cov4 = (uint8_t)(((int)coverage * 15 + 127) / 255);
+            if (oled_coverage_gamma_lut[cov4] != 0) return (int)col;
+        }
+    }
+    return -1;
+}
+
+static uint8_t oled_coverage_to_gray4(uint8_t coverage, uint8_t gray4) {
+    if (coverage == 0 || (gray4 & 0x0F) == 0) return 0;
 
     uint8_t cov4 = (uint8_t)(((int)coverage * 15 + 127) / 255);
     uint8_t corrected = oled_coverage_gamma_lut[cov4];
-    if (corrected == 0) return;
+    if (corrected == 0) return 0;
 
-    uint8_t v = (uint8_t)(((int)corrected * (int)fg + 7) / 15);
-    if (v > oled_get_px(x, y)) oled_set_px(x, y, v);
+    return (uint8_t)(((int)corrected * (int)(gray4 & 0x0F) + 7) / 15);
 }
 
 static void oled_fill_rect(int x, int y, int w, int h, uint8_t gray4) {
@@ -1543,6 +1792,17 @@ static int oled_flush_region_bytes(int byte_start, int byte_end, int row_start, 
                    (size_t)width_bytes);
         }
         pthread_mutex_unlock(&g_oled.preview_lock);
+
+        /* Track the raw framebuffer bytes that are now represented on the
+           panel. This also keeps direct partial updates, such as the music
+           marquee footer, synchronized with the dirty-region comparator. */
+        if (g_oled.prev_valid) {
+            for (int y = 0; y < height; y++) {
+                memcpy(g_oled.prev_fb + ((size_t)(row_start + y) * OLED_ROW_BYTES) + byte_start,
+                       g_oled.fb + ((size_t)(row_start + y) * OLED_ROW_BYTES) + byte_start,
+                       (size_t)width_bytes);
+            }
+        }
     }
 
     return rc;
@@ -1561,29 +1821,60 @@ static int oled_flush(void) {
     if (g_oled.spi_fd < 0) return -1;
     if (!g_oled.prev_valid) return oled_flush_full();
 
-    int min_row = OLED_H;
-    int max_row = -1;
-    int min_byte = OLED_ROW_BYTES;
-    int max_byte = -1;
+    int row_min[OLED_H];
+    int row_max[OLED_H];
 
     for (int y = 0; y < OLED_H; y++) {
+        row_min[y] = OLED_ROW_BYTES;
+        row_max[y] = -1;
+
         const uint8_t *cur = g_oled.fb + ((size_t)y * OLED_ROW_BYTES);
         const uint8_t *old = g_oled.prev_fb + ((size_t)y * OLED_ROW_BYTES);
         for (int bx = 0; bx < OLED_ROW_BYTES; bx++) {
-            if (cur[bx] != old[bx]) {
-                if (y < min_row) min_row = y;
-                if (y > max_row) max_row = y;
-                if (bx < min_byte) min_byte = bx;
-                if (bx > max_byte) max_byte = bx;
-            }
+            if (cur[bx] == old[bx]) continue;
+            if (bx < row_min[y]) row_min[y] = bx;
+            if (bx > row_max[y]) row_max[y] = bx;
         }
     }
 
-    if (max_row < min_row || max_byte < min_byte) return 0;
+    /* Flush each contiguous dirty row band independently. A single bounding
+       rectangle made the blinking colon and seconds line span nearly the full
+       panel, rewriting unchanged image RAM every second. Separate bands keep
+       static artwork untouched while still allowing full redraws when needed. */
+    int y = 0;
+    while (y < OLED_H) {
+        while (y < OLED_H && row_max[y] < row_min[y]) y++;
+        if (y >= OLED_H) break;
 
-    int rc = oled_flush_region_bytes(min_byte, max_byte, min_row, max_row);
-    if (rc == 0) memcpy(g_oled.prev_fb, g_oled.fb, sizeof(g_oled.fb));
-    return rc;
+        int band_start = y;
+        int band_end = y;
+        int band_min = row_min[y];
+        int band_max = row_max[y];
+
+        while (band_end + 1 < OLED_H &&
+               row_max[band_end + 1] >= row_min[band_end + 1]) {
+            int next_min = row_min[band_end + 1];
+            int next_max = row_max[band_end + 1];
+
+            /* Merge vertically only when the byte ranges overlap or touch.
+               This prevents an unrelated seconds-line change from widening a
+               colon update into a rectangle that crosses static artwork. */
+            if (next_min > band_max + 1 || next_max + 1 < band_min) break;
+
+            band_end++;
+            if (next_min < band_min) band_min = next_min;
+            if (next_max > band_max) band_max = next_max;
+        }
+
+        if (oled_flush_region_bytes(band_min, band_max,
+                                    band_start, band_end) != 0)
+            return -1;
+
+        y = band_end + 1;
+    }
+
+    memcpy(g_oled.prev_fb, g_oled.fb, sizeof(g_oled.fb));
+    return 0;
 }
 
 static int oled_init(void) {
@@ -1890,6 +2181,31 @@ static int text5x7_width(const char *text, int scale) {
     return n > 0 ? n * 5 * scale + (n - 1) * scale : 0;
 }
 
+/* Return the visible 5x7 ink span, excluding blank trailing glyph columns. */
+static int text5x7_ink_width(const char *text) {
+    if (!text || !*text) return 0;
+
+    int pen_x = 0;
+    int rightmost = -1;
+    const unsigned char *cursor = (const unsigned char *)text;
+    while (*cursor) {
+        uint32_t cp = utf8_next_codepoint(&cursor);
+        if (cp >= 0x0300 && cp <= 0x036f) continue;
+
+        const uint8_t *glyph = font5x7_glyph(cp);
+        for (int row = 0; row < 7; row++) {
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < 5; col++) {
+                if ((bits & (1 << (4 - col))) && pen_x + col > rightmost)
+                    rightmost = pen_x + col;
+            }
+        }
+        pen_x += 6;
+    }
+
+    return rightmost >= 0 ? rightmost + 1 : 0;
+}
+
 static void draw_char5x7(int x, int y, int scale, uint32_t cp, uint8_t c) {
     const uint8_t *g = font5x7_glyph(cp);
     if (scale < 1) scale = 1;
@@ -1997,24 +2313,25 @@ static int song_marquee_offset(int cycle_width, uint64_t started_ms) {
     return (int)(pixels % (uint64_t)cycle_width);
 }
 
-static void draw_song_metadata_line(const char *text, uint64_t started_ms, int min_x) {
+static void draw_song_metadata_line(const char *text, uint64_t started_ms,
+                                    int min_x, int right_pixel) {
     if (!text || !*text) return;
 
     int clip_x0 = clamp_int(min_x, 0, OLED_W - 3);
-    int clip_x1 = CLOCK_RIGHT_X;
-    int available = clip_x1 - clip_x0;
+    int clip_x1 = clamp_int(right_pixel + 1, clip_x0 + 1, OLED_W);
+    int available = right_pixel - clip_x0 + 1;
     if (available <= 0) return;
 
-    int width = text5x7_width(text, 1);
+    int width = text5x7_ink_width(text);
+    if (width <= 0) return;
     if (width <= available) {
-        int x = clip_x0 + (available - width) / 2;
-        draw_text5x7_clipped(x, CLOCK_FOOTER_TEXT_Y, text, 11,
+        draw_text5x7_clipped(right_pixel - width + 1, CLOCK_FOOTER_TEXT_Y, text, 11,
                              clip_x0, clip_x1);
         return;
     }
 
-    int cycle_width = available + width + SONG_SCROLL_GAP_PX;
-    int x = clip_x1 - song_marquee_offset(cycle_width, started_ms);
+    int cycle_width = width + SONG_SCROLL_GAP_PX;
+    int x = right_pixel - width + 1 - song_marquee_offset(cycle_width, started_ms);
     draw_text5x7_clipped(x, CLOCK_FOOTER_TEXT_Y, text, 11,
                          clip_x0, clip_x1);
     x += cycle_width;
@@ -2023,104 +2340,38 @@ static void draw_song_metadata_line(const char *text, uint64_t started_ms, int m
 }
 
 static void draw_version_corner(void) {
-    char ver[24];
+    char ver[48];
     snprintf(ver, sizeof(ver), "v%s", APP_VERSION);
     int w = text5x7_width(ver, 1);
     draw_text5x7(OLED_W - w - 2, OLED_H - 8, 1, ver, 8);
 }
 
 
-static int read_wlan0_ipv4_octet(unsigned int *last_octet) {
-    if (last_octet) *last_octet = 0;
+static void format_footer_alarm_label(const struct alarm_slot alarms[MAX_ALARMS],
+                                      time_t now, int clock_24h_mode,
+                                      char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
 
-    FILE *carrier = fopen("/sys/class/net/wlan0/carrier", "r");
-    int carrier_up = 0;
-    if (!carrier || fscanf(carrier, "%d", &carrier_up) != 1 || carrier_up != 1) {
-        if (carrier) fclose(carrier);
-        return 0;
-    }
-    fclose(carrier);
+    time_t next = next_alarm_time(alarms, now, NULL);
+    if (next <= 0) return;
 
-    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return 0;
-
-    struct ifreq request;
-    memset(&request, 0, sizeof(request));
-    safe_str(request.ifr_name, sizeof(request.ifr_name), "wlan0");
-    if (ioctl(fd, SIOCGIFFLAGS, &request) != 0 ||
-        !(request.ifr_flags & IFF_UP) ||
-        (request.ifr_flags & IFF_LOOPBACK)) {
-        close(fd);
-        return 0;
-    }
-
-    memset(&request, 0, sizeof(request));
-    safe_str(request.ifr_name, sizeof(request.ifr_name), "wlan0");
-    if (ioctl(fd, SIOCGIFADDR, &request) != 0) {
-        close(fd);
-        return 0;
-    }
-    close(fd);
-
-    const struct sockaddr_in *address = (const struct sockaddr_in *)&request.ifr_addr;
-    uint32_t host = ntohl(address->sin_addr.s_addr);
-    if (host == 0 || (host >> 24) == 127) return 0;
-
-    if (last_octet) *last_octet = host & 0xffu;
-    return 1;
+    struct tm tmv;
+    localtime_r(&next, &tmv);
+    char clock[24];
+    strftime(clock, sizeof(clock), clock_24h_mode ? "%H:%M" : "%I:%M%p", &tmv);
+    if (!clock_24h_mode && clock[0] == '0') memmove(clock, clock + 1, strlen(clock));
+    snprintf(out, out_len, "ALARM %s", clock);
 }
 
-static int footer_wifi_connected(unsigned int *last_octet) {
-    static uint64_t last_check_ms = 0;
-    static int cached_connected = 0;
-    static unsigned int cached_octet = 0;
-    uint64_t now_ms = monotonic_millis();
-
-    if (last_check_ms == 0 || now_ms - last_check_ms >= 1000u) {
-        cached_connected = read_wlan0_ipv4_octet(&cached_octet);
-        last_check_ms = now_ms;
-    }
-
-    if (last_octet) *last_octet = cached_octet;
-    return cached_connected;
-}
-
-static int wifi_status_render_state(void) {
-    if (footer_wifi_connected(NULL)) return 2;
-    return ((monotonic_millis() / 500u) & 1u) ? 1 : 0;
-}
-
-static int footer_status_end_x(int alarm_on, int alarm_active) {
-    int x = CLOCK_STATUS_TEXT_X;
-    x += text5x7_width("W.000", 1);
-    x += text5x7_width(" | ", 1);
-    x += text5x7_width((alarm_on || alarm_active) ? "ALARM ON" : "ALARM OFF", 1);
-    return x + CLOCK_STATUS_TEXT_GAP;
-}
-
-static int draw_status_labels(int alarm_on, int alarm_active) {
+static int draw_status_labels(const char *alarm_label, int alarm_active) {
     const int y = CLOCK_FOOTER_TEXT_Y;
-    int x = CLOCK_STATUS_TEXT_X;
-    unsigned int last_octet = 0;
-    int connected = footer_wifi_connected(&last_octet);
-    int wifi_state = connected ? 2 : wifi_status_render_state();
-    char wifi_label[8];
+    if (!alarm_label || !*alarm_label) return CLOCK_STATUS_TEXT_X;
 
-    if (connected)
-        snprintf(wifi_label, sizeof(wifi_label), "W.%03u", last_octet);
-    else
-        safe_str(wifi_label, sizeof(wifi_label), "W.OFF");
-
-    if (wifi_state != 0)
-        draw_text5x7(x, y, 1, wifi_label, connected ? 11 : 6);
-    x += text5x7_width("W.000", 1);
-
-    draw_text5x7(x, y, 1, " | ", 8);
-    x += text5x7_width(" | ", 1);
-
-    const char *alarm_label = (alarm_on || alarm_active) ? "ALARM ON" : "ALARM OFF";
-    draw_text5x7(x, y, 1, alarm_label, alarm_active ? 15 : 11);
-    return footer_status_end_x(alarm_on, alarm_active);
+    const char *label = alarm_label;
+    int width = text5x7_width(label, 1);
+    draw_text5x7(CLOCK_STATUS_TEXT_X, y, 1, label, alarm_active ? 15 : 11);
+    return CLOCK_STATUS_TEXT_X + width + CLOCK_STATUS_CONTENT_GAP;
 }
 
 static void draw_startup_screen(void) {
@@ -2247,7 +2498,7 @@ static int font_cache_ensure_locked(const char *font_file, const char *font_path
 }
 
 
-static int draw_clock_truetype_time_fixed_right_aligned(const char *font_file, int px_size, int hour, int minute, int right_x, int show_leading_zero, uint8_t colon_level);
+static int draw_clock_truetype_time_slotted_right_aligned(const char *font_file, int px_size, int hour, int minute, int right_pixel, int show_leading_zero, uint8_t colon_level);
 static int clock_colon_blink_phase(void) {
     /* Simple 1-second blink: one second on, one second off. */
     time_t now = time(NULL);
@@ -2260,12 +2511,19 @@ static uint8_t clock_colon_blink_level(void) {
 }
 
 /*
-   Draw the main clock time in fixed digit slots and anchor its visible right
-   edge to one display pixel. Proportional TrueType side bearings therefore do
-   not make the clock shift as the digits change. Single-digit 12-hour times use
-   H:MM; 24-hour times retain HH:MM.
-*/
-static int draw_clock_truetype_time_fixed_right_aligned(const char *font_file, int px_size, int hour, int minute, int right_x, int show_leading_zero, uint8_t colon_level) {
+ * Render a TrueType/OpenType clock into a fixed-slot off-screen canvas.
+ *
+ * Every numeric position uses the widest visible digit from the selected font,
+ * so changing minutes cannot move the clock. Glyph bearings, proportional
+ * widths, and unusual advance values do not affect the slot origins because
+ * placement is based on the bitmap's visible ink rather than its pen metrics.
+ *
+ * Numeric glyphs are right-anchored inside their fixed slots and the complete
+ * slot grid has one fixed screen origin. Minute changes therefore cannot move
+ * the clock. The final minute digit reaches right_pixel while the date and
+ * music share that same visible-pixel anchor.
+ */
+static int draw_clock_truetype_time_slotted_right_aligned(const char *font_file, int px_size, int hour, int minute, int right_pixel, int show_leading_zero, uint8_t colon_level) {
     if (!font_file || !*font_file) return -1;
 
     char font_path[512];
@@ -2278,34 +2536,51 @@ static int draw_clock_truetype_time_fixed_right_aligned(const char *font_file, i
     }
 
     FT_Face face = g_font.face;
-
     int digit_slot = 0;
     int colon_slot = 0;
     int min_y = 99999;
     int max_y = -99999;
 
     for (char c = '0'; c <= '9'; c++) {
-        if (FT_Load_Char(face, c, FT_LOAD_RENDER) != 0) continue;
-        FT_GlyphSlot g = face->glyph;
-        int adv = (int)((g->advance.x + 32) >> 6);
-        int vis = (int)g->bitmap.width + abs(g->bitmap_left);
-        if (adv < vis) adv = vis;
-        if (adv > digit_slot) digit_slot = adv;
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER) != 0) {
+            pthread_mutex_unlock(&g_font.lock);
+            return -1;
+        }
 
-        int gy1 = g->bitmap_top;
-        int gy0 = gy1 - (int)g->bitmap.rows;
+        FT_GlyphSlot glyph = face->glyph;
+        int left = ft_bitmap_leftmost_visible_col(&glyph->bitmap);
+        int right = ft_bitmap_rightmost_visible_col(&glyph->bitmap);
+        if (left < 0 || right < left) {
+            pthread_mutex_unlock(&g_font.lock);
+            return -1;
+        }
+
+        int ink_width = right - left + 1;
+        if (ink_width > digit_slot) digit_slot = ink_width;
+
+        int gy1 = glyph->bitmap_top;
+        int gy0 = gy1 - (int)glyph->bitmap.rows;
         if (gy0 < min_y) min_y = gy0;
         if (gy1 > max_y) max_y = gy1;
     }
 
-    if (FT_Load_Char(face, ':', FT_LOAD_RENDER) == 0) {
-        FT_GlyphSlot g = face->glyph;
-        colon_slot = (int)((g->advance.x + 32) >> 6);
-        int vis = (int)g->bitmap.width + abs(g->bitmap_left);
-        if (colon_slot < vis) colon_slot = vis;
+    if (FT_Load_Char(face, ':', FT_LOAD_RENDER) != 0) {
+        pthread_mutex_unlock(&g_font.lock);
+        return -1;
+    }
 
-        int gy1 = g->bitmap_top;
-        int gy0 = gy1 - (int)g->bitmap.rows;
+    {
+        FT_GlyphSlot glyph = face->glyph;
+        int left = ft_bitmap_leftmost_visible_col(&glyph->bitmap);
+        int right = ft_bitmap_rightmost_visible_col(&glyph->bitmap);
+        if (left < 0 || right < left) {
+            pthread_mutex_unlock(&g_font.lock);
+            return -1;
+        }
+
+        colon_slot = right - left + 1;
+        int gy1 = glyph->bitmap_top;
+        int gy0 = gy1 - (int)glyph->bitmap.rows;
         if (gy0 < min_y) min_y = gy0;
         if (gy1 > max_y) max_y = gy1;
     }
@@ -2315,102 +2590,82 @@ static int draw_clock_truetype_time_fixed_right_aligned(const char *font_file, i
         return -1;
     }
 
-    const int slot_gap = 1;
-
-    /*
-       In 24-hour mode we keep a full HH:MM footprint.
-
-       In 12-hour mode, a single-digit hour should not reserve a visible-width
-       leading slot. The earlier invisible-leading-zero trick kept the digits
-       stable, but it also made 1:05 look shifted right and left too much blank
-       space between the image and the time. Instead, keep each displayed digit
-       in a fixed digit slot, but center the actual visible H:MM or HH:MM
-       footprint.
-    */
     if (hour < 0) hour = 0;
     else if (hour > 99) hour = 99;
     if (minute < 0) minute = 0;
     else if (minute > 99) minute = 99;
 
+    const int slot_gap = 1;
     int visible_hour_digits = (show_leading_zero || hour >= 10) ? 2 : 1;
-    int total_w = digit_slot * (visible_hour_digits + 2) + colon_slot + slot_gap * (visible_hour_digits + 2);
-
-    char time_text[8];
-    if (visible_hour_digits == 1) snprintf(time_text, sizeof(time_text), "%d:%02d", hour, minute);
-    else snprintf(time_text, sizeof(time_text), "%02d:%02d", hour, minute);
-
-    /*
-       Measure the actual visible glyph bounds, not just the logical slot width.
-       Some TrueType fonts have uneven side bearings, especially around "1" and
-       ":". Anchoring the measured right edge keeps every time aligned to the
-       same display pixel while retaining fixed digit slots.
-    */
-    int rel_min_x = 99999;
-    int rel_max_x = -99999;
-    int measure_slot_x = 0;
-    for (int i = 0; time_text[i]; i++) {
-        char c = time_text[i];
-        int slot_w = (c == ':') ? colon_slot : digit_slot;
-        if (FT_Load_Char(face, c, FT_LOAD_RENDER) == 0) {
-            FT_GlyphSlot g = face->glyph;
-            FT_Bitmap *bm = &g->bitmap;
-            int adv = (int)((g->advance.x + 32) >> 6);
-            if (adv <= 0) adv = (int)bm->width;
-            int pen_x = measure_slot_x + ((slot_w - adv) / 2);
-            int gx0 = pen_x + g->bitmap_left;
-            int gx1 = gx0 + (int)bm->width;
-            if (bm->width > 0) {
-                if (gx0 < rel_min_x) rel_min_x = gx0;
-                if (gx1 > rel_max_x) rel_max_x = gx1;
-            }
-        }
-        measure_slot_x += slot_w + slot_gap;
+    int character_count = visible_hour_digits + 3;
+    int total_w = digit_slot * (visible_hour_digits + 2)
+        + colon_slot + slot_gap * (character_count - 1);
+    if (total_w <= 0 || total_w > OLED_W) {
+        pthread_mutex_unlock(&g_font.lock);
+        return -1;
     }
 
-    int start_x;
-    if (rel_max_x > rel_min_x)
-        start_x = right_x - rel_max_x;
+    char time_text[8];
+    if (visible_hour_digits == 1)
+        snprintf(time_text, sizeof(time_text), "%d:%02d", hour, minute);
     else
-        start_x = right_x - total_w;
+        snprintf(time_text, sizeof(time_text), "%02d:%02d", hour, minute);
 
     int text_h = max_y - min_y;
     const int time_band_top = 0;
-    const int time_band_bottom = OLED_H - CLOCK_FOOTER_H; /* footer lives below */
+    const int time_band_bottom = OLED_H - CLOCK_FOOTER_H;
     int top_y = ((OLED_H - text_h) / 2) + CLOCK_TIME_Y_OFFSET;
     if (top_y < time_band_top) top_y = time_band_top;
     if (top_y + text_h > time_band_bottom) top_y = time_band_bottom - text_h;
     if (top_y < 0) top_y = 0;
     int baseline_y = top_y + max_y;
 
-    int slot_x = start_x;
+    uint8_t canvas[OLED_W * OLED_H];
+    memset(canvas, 0, sizeof(canvas));
+
+    int slot_x = 0;
     for (int i = 0; time_text[i]; i++) {
         char c = time_text[i];
         int slot_w = (c == ':') ? colon_slot : digit_slot;
-        int visible = 1;
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER) != 0) {
+            pthread_mutex_unlock(&g_font.lock);
+            return -1;
+        }
 
-        if (FT_Load_Char(face, c, FT_LOAD_RENDER) == 0) {
-            FT_GlyphSlot g = face->glyph;
-            FT_Bitmap *bm = &g->bitmap;
-            int adv = (int)((g->advance.x + 32) >> 6);
-            if (adv <= 0) adv = (int)bm->width;
+        FT_GlyphSlot glyph = face->glyph;
+        FT_Bitmap *bitmap = &glyph->bitmap;
+        int left = ft_bitmap_leftmost_visible_col(bitmap);
+        int right = ft_bitmap_rightmost_visible_col(bitmap);
+        if (left < 0 || right < left) {
+            pthread_mutex_unlock(&g_font.lock);
+            return -1;
+        }
 
-            int pen_x = slot_x + ((slot_w - adv) / 2);
-            int gx = pen_x + g->bitmap_left;
-            int gy = baseline_y - g->bitmap_top;
-            uint8_t fg = (c == ':') ? colon_level : (visible ? 15 : 0);
+        int ink_width = right - left + 1;
+        /* Numeric glyphs are right-anchored inside fixed-width slots. This
+           keeps every slot origin fixed while ensuring the final minute digit
+           always reaches the shared visible-pixel anchor. The colon remains
+           centred in its own fixed slot. */
+        int ink_left = (c == ':')
+            ? slot_x + (slot_w - ink_width) / 2
+            : slot_x + slot_w - ink_width;
+        int bitmap_x = ink_left - left;
+        int bitmap_y = baseline_y - glyph->bitmap_top;
+        uint8_t foreground = (c == ':') ? colon_level : 15;
 
-            if (fg > 0) {
-                for (unsigned int row = 0; row < bm->rows; row++) {
-                    for (unsigned int col = 0; col < bm->width; col++) {
-                        uint8_t coverage = 0;
-                        if (bm->pixel_mode == FT_PIXEL_MODE_GRAY) {
-                            coverage = bm->buffer[row * bm->pitch + col];
-                        } else if (bm->pixel_mode == FT_PIXEL_MODE_MONO) {
-                            uint8_t byte = bm->buffer[row * bm->pitch + (col >> 3)];
-                            coverage = (byte & (0x80 >> (col & 7))) ? 255 : 0;
-                        }
-                        oled_blend_px(gx + (int)col, gy + (int)row, coverage, fg);
-                    }
+        if (foreground > 0) {
+            for (unsigned int row = 0; row < bitmap->rows; row++) {
+                int y = bitmap_y + (int)row;
+                if (y < 0 || y >= OLED_H) continue;
+
+                for (unsigned int col = 0; col < bitmap->width; col++) {
+                    int x = bitmap_x + (int)col;
+                    if (x < 0 || x >= total_w) continue;
+
+                    uint8_t coverage = ft_bitmap_coverage_at(bitmap, row, col);
+                    uint8_t gray = oled_coverage_to_gray4(coverage, foreground);
+                    size_t index = (size_t)y * OLED_W + (size_t)x;
+                    if (gray > canvas[index]) canvas[index] = gray;
                 }
             }
         }
@@ -2418,14 +2673,30 @@ static int draw_clock_truetype_time_fixed_right_aligned(const char *font_file, i
         slot_x += slot_w + slot_gap;
     }
 
+    /* Anchor the fixed slot grid, not the current glyph bounds. The complete
+       clock therefore keeps one X origin for every minute value. Because each
+       numeric glyph is right-anchored in its slot, the last visible minute
+       pixel still lands exactly on right_pixel. */
+    int screen_x = right_pixel - (total_w - 1);
+    for (int y = time_band_top; y < time_band_bottom; y++) {
+        for (int x = 0; x < total_w; x++) {
+            uint8_t gray = canvas[(size_t)y * OLED_W + (size_t)x];
+            if (gray == 0) continue;
+
+            int destination_x = screen_x + x;
+            if (destination_x < 0 || destination_x >= OLED_W) continue;
+            if (gray > oled_get_px(destination_x, y))
+                oled_set_px(destination_x, y, gray);
+        }
+    }
+
     pthread_mutex_unlock(&g_font.lock);
     return 0;
 }
 
 
-
-static void draw_date_right_aligned_culled(const struct tm *tmv, int min_x, int right_x) {
-    if (!tmv || right_x <= min_x) return;
+static void draw_date_right_aligned_culled(const struct tm *tmv, int min_x, int right_pixel) {
+    if (!tmv || right_pixel < min_x) return;
 
     static const char *days_full[] = {
         "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"
@@ -2457,11 +2728,11 @@ static void draw_date_right_aligned_culled(const struct tm *tmv, int min_x, int 
     snprintf(candidates[3], sizeof(candidates[3]), "%s %d",
              months_short[mon], day);
 
-    int available = right_x - min_x;
+    int available = right_pixel - min_x + 1;
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-        int width = text5x7_width(candidates[i], 1);
-        if (width <= available) {
-            draw_text5x7(right_x - width, CLOCK_FOOTER_TEXT_Y, 1, candidates[i], 9);
+        int width = text5x7_ink_width(candidates[i]);
+        if (width > 0 && width <= available) {
+            draw_text5x7(right_pixel - width + 1, CLOCK_FOOTER_TEXT_Y, 1, candidates[i], 9);
             return;
         }
     }
@@ -2469,53 +2740,51 @@ static void draw_date_right_aligned_culled(const struct tm *tmv, int min_x, int 
 
 
 static void draw_clock_footer_contents(const struct tm *tmv,
-                                       int alarm_on, int alarm_active,
+                                       const char *alarm_label, int alarm_active,
                                        int audio_playing, int show_song_metadata, int story_playing,
                                        const char *audio_display, uint64_t scroll_started_ms) {
-    int content_min_x = CLOCK_STATUS_TEXT_X;
-    if (!story_playing)
-        content_min_x = draw_status_labels(alarm_on, alarm_active);
-
-    if (audio_playing && show_song_metadata && audio_display && audio_display[0])
-        draw_song_metadata_line(audio_display, scroll_started_ms, content_min_x);
-    else
-        draw_date_right_aligned_culled(tmv, content_min_x, CLOCK_RIGHT_X);
-
     if (tmv) draw_seconds_position_line(tmv->tm_sec);
+
+    int content_min_x = CLOCK_STATUS_TEXT_X;
+    if (!story_playing && !audio_playing) {
+        safe_str(g_footer_alarm_label, sizeof(g_footer_alarm_label), alarm_label);
+        content_min_x = draw_status_labels(g_footer_alarm_label, alarm_active);
+    }
+    g_footer_content_min_x = content_min_x;
+
+    /* Clock, date, and music share one visible right-edge pixel. */
+    if (audio_playing && show_song_metadata && audio_display && audio_display[0])
+        draw_song_metadata_line(audio_display, scroll_started_ms,
+                                content_min_x, CLOCK_CONTENT_RIGHT_PIXEL);
+    else
+        draw_date_right_aligned_culled(tmv, content_min_x, CLOCK_CONTENT_RIGHT_PIXEL);
 }
 
 
 static int song_metadata_marquee_active(void) {
-    int active = 0;
+    int show;
+    int story_playing;
+    int audio_playing;
+    char audio_display[SONG_METADATA_TEXT_MAX];
     uint64_t now_ms = monotonic_millis();
+
     pthread_mutex_lock(&g_state.lock);
-    int show = g_state.show_song_metadata;
-    int story_playing = g_state.story_playing;
-    int alarm_on = 0;
-    for (int i = 0; i < MAX_ALARMS; i++) {
-        if (g_state.alarms[i].enabled) {
-            alarm_on = 1;
-            break;
-        }
-    }
-    int alarm_active = g_state.alarm_active;
+    show = g_state.show_song_metadata;
+    story_playing = g_state.story_playing;
+    audio_playing = g_state.audio_playing;
+    safe_str(audio_display, sizeof(audio_display), g_state.audio_display);
     if (story_playing) show = now_ms < g_state.story_title_until_ms;
-    if (g_state.audio_playing && show && g_state.audio_display[0]) {
-        int min_x = story_playing ? CLOCK_STATUS_TEXT_X
-                                  : footer_status_end_x(alarm_on, alarm_active);
-        int available = CLOCK_RIGHT_X - min_x;
-        active = available > 0 && text5x7_width(g_state.audio_display, 1) > available;
-    }
     pthread_mutex_unlock(&g_state.lock);
-    return active;
+
+    if (!audio_playing || !show || !audio_display[0]) return 0;
+    int available = CLOCK_CONTENT_RIGHT_PIXEL - g_footer_content_min_x + 1;
+    return available > 0 && text5x7_ink_width(audio_display) > available;
 }
 
-
-static void refresh_clock_footer(void) {
+static void redraw_clock_footer(void) {
     time_t now = time(NULL);
     struct tm tmv;
     localtime_r(&now, &tmv);
-    int alarm_on = 0;
     int alarm_active;
     int audio_playing;
     int show_song_metadata;
@@ -2524,12 +2793,6 @@ static void refresh_clock_footer(void) {
     char audio_display[SONG_METADATA_TEXT_MAX];
 
     pthread_mutex_lock(&g_state.lock);
-    for (int i = 0; i < MAX_ALARMS; i++) {
-        if (g_state.alarms[i].enabled) {
-            alarm_on = 1;
-            break;
-        }
-    }
     alarm_active = g_state.alarm_active;
     audio_playing = g_state.audio_playing;
     show_song_metadata = g_state.show_song_metadata;
@@ -2542,18 +2805,14 @@ static void refresh_clock_footer(void) {
 
     oled_fill_rect(0, CLOCK_SECONDS_LINE_Y, OLED_W,
                    OLED_H - CLOCK_SECONDS_LINE_Y, 0);
-    draw_clock_footer_contents(&tmv, alarm_on, alarm_active,
+    draw_clock_footer_contents(&tmv, g_footer_alarm_label, alarm_active,
                                audio_playing, show_song_metadata,
                                story_playing, audio_display, scroll_started_ms);
-    (void)oled_flush_region_bytes(0, OLED_ROW_BYTES - 1,
-                                  CLOCK_SECONDS_LINE_Y, OLED_H - 1);
 }
-
 
 static int image_raw_pixel(const uint8_t *raw, int x, int y) {
     if (!raw || x < 0 || y < 0 || x >= MP_IMAGE_WIDTH || y >= MP_IMAGE_HEIGHT) return 0;
-    uint8_t b = raw[(y * MP_IMAGE_WIDTH + x) / 2];
-    return (x & 1) ? (b & 0x0F) : ((b >> 4) & 0x0F);
+    return raw[y * MP_IMAGE_WIDTH + x];
 }
 
 static int load_image_raw_uncached_by_file(const char *file, int bedtime, uint8_t *raw, size_t raw_len) {
@@ -2561,11 +2820,14 @@ static int load_image_raw_uncached_by_file(const char *file, int bedtime, uint8_
     char path[512];
     if (make_image_path_by_file(file, bedtime, path, sizeof(path)) != 0) return -1;
 
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size != MP_IMAGE_RAW_BYTES) return -1;
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    size_t n = fread(raw, 1, MP_IMAGE_RAW_BYTES, f);
-    fclose(f);
-    return n == MP_IMAGE_RAW_BYTES ? 0 : -1;
+
+    int rc = fread(raw, 1, MP_IMAGE_RAW_BYTES, f) == MP_IMAGE_RAW_BYTES ? 0 : -1;
+    if (fclose(f) != 0) rc = -1;
+    return rc;
 }
 
 static int load_image_raw_cached_by_file(const char *file, int bedtime, uint8_t *raw, size_t raw_len) {
@@ -2641,24 +2903,95 @@ static int clock_image_refresh_due(void) {
     return time(NULL) >= g_rotating_images[bedtime ? 1 : 0].next_change;
 }
 
-static int draw_image_thumb_raw(const uint8_t *raw, int ox, int oy, int size) {
-    if (!raw || size <= 0) return -1;
+static uint8_t image_raw_sample_bilinear(const uint8_t *raw, int x_fp, int y_fp) {
+    int x0 = x_fp >> 16;
+    int y0 = y_fp >> 16;
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    int wx = x_fp & 0xFFFF;
+    int wy = y_fp & 0xFFFF;
 
-    for (int y = 0; y < size; y++) {
-        int sy = (y * MP_IMAGE_HEIGHT) / size;
-        for (int x = 0; x < size; x++) {
-            int sx = (x * MP_IMAGE_WIDTH) / size;
-            oled_set_px(ox + x, oy + y, (uint8_t)image_raw_pixel(raw, sx, sy));
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= MP_IMAGE_WIDTH) x1 = MP_IMAGE_WIDTH - 1;
+    if (y1 >= MP_IMAGE_HEIGHT) y1 = MP_IMAGE_HEIGHT - 1;
+
+    int p00 = image_raw_pixel(raw, x0, y0);
+    int p10 = image_raw_pixel(raw, x1, y0);
+    int p01 = image_raw_pixel(raw, x0, y1);
+    int p11 = image_raw_pixel(raw, x1, y1);
+    int top = p00 * (65536 - wx) + p10 * wx;
+    int bottom = p01 * (65536 - wx) + p11 * wx;
+    int64_t value = (int64_t)top * (65536 - wy) + (int64_t)bottom * wy;
+    return (uint8_t)((value + (1LL << 31)) >> 32);
+}
+
+static uint8_t image_gray8_to_oled4(uint8_t gray8, int x, int y) {
+    static const uint8_t bayer4[16] = {
+         0,  8,  2, 10,
+        12,  4, 14,  6,
+         3, 11,  1,  9,
+        15,  7, 13,  5
+    };
+    int scaled = (int)gray8 * 15;
+    int level = scaled / 255;
+    int remainder = scaled - level * 255;
+    int threshold = ((int)bayer4[((y & 3) << 2) | (x & 3)] * 255 + 8) / 16;
+    if (remainder > threshold && level < 15) level++;
+    return (uint8_t)level;
+}
+
+static int draw_image_region_raw(const uint8_t *raw, int ox, int oy, int width, int height) {
+    if (!raw || width <= 0 || height <= 0) return -1;
+
+    int source_x = 0;
+    int source_y = 0;
+    int source_width = MP_IMAGE_WIDTH;
+    int source_height = MP_IMAGE_HEIGHT;
+
+    /* Fill the destination without distortion. Crop centrally to its final
+       aspect ratio, then resize the 8-bit source and quantize exactly once. */
+    if ((long long)source_width * height > (long long)source_height * width) {
+        source_width = (source_height * width) / height;
+        if (source_width < 1) source_width = 1;
+        source_x = (MP_IMAGE_WIDTH - source_width) / 2;
+    } else if ((long long)source_width * height < (long long)source_height * width) {
+        source_height = (source_width * height) / width;
+        if (source_height < 1) source_height = 1;
+        source_y = (MP_IMAGE_HEIGHT - source_height) / 2;
+    }
+
+    for (int y = 0; y < height; y++) {
+        int64_t sy_fp = ((int64_t)(2 * y + 1) * source_height * 65536) /
+                        (2 * height) - 32768 + ((int64_t)source_y << 16);
+        if (sy_fp < ((int64_t)source_y << 16)) sy_fp = (int64_t)source_y << 16;
+        int64_t sy_max = (int64_t)(source_y + source_height - 1) << 16;
+        if (sy_fp > sy_max) sy_fp = sy_max;
+
+        for (int x = 0; x < width; x++) {
+            int64_t sx_fp = ((int64_t)(2 * x + 1) * source_width * 65536) /
+                            (2 * width) - 32768 + ((int64_t)source_x << 16);
+            if (sx_fp < ((int64_t)source_x << 16)) sx_fp = (int64_t)source_x << 16;
+            int64_t sx_max = (int64_t)(source_x + source_width - 1) << 16;
+            if (sx_fp > sx_max) sx_fp = sx_max;
+
+            uint8_t gray8 = image_raw_sample_bilinear(raw, (int)sx_fp, (int)sy_fp);
+            oled_set_px(ox + x, oy + y, image_gray8_to_oled4(gray8, ox + x, oy + y));
         }
     }
 
     return 0;
 }
 
-static int draw_image_thumb_by_file(const char *file, int bedtime, int ox, int oy, int size) {
+static int draw_image_region_by_file(const char *file, int bedtime,
+                                     int ox, int oy, int width, int height) {
     uint8_t raw[MP_IMAGE_RAW_BYTES];
     if (load_image_raw_cached_by_file(file, bedtime, raw, sizeof(raw)) != 0) return -1;
-    return draw_image_thumb_raw(raw, ox, oy, size);
+    return draw_image_region_raw(raw, ox, oy, width, height);
+}
+
+static int draw_image_thumb_by_file(const char *file, int bedtime, int ox, int oy, int size) {
+    return draw_image_region_by_file(file, bedtime, ox, oy, size, size);
 }
 
 static void refresh_story_collage(void) {
@@ -2734,87 +3067,23 @@ static void draw_story_mode_screen(const char *message) {
     oled_flush_full();
 }
 
-static void draw_clock_screen(void) {
-    time_t now = time(NULL);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-
-    int raw_hour = tmv.tm_hour;
-    int minute = tmv.tm_min;
-    int clock_24h_mode = 0;
-    int hour;
-
-    pthread_mutex_lock(&g_state.lock);
-    int alarm_on = 0;
-    for (int i = 0; i < MAX_ALARMS; i++) {
-        if (g_state.alarms[i].enabled) {
-            alarm_on = 1;
-            break;
-        }
-    }
-    int oled_font = g_state.oled_font;
-    int alarm_active = g_state.alarm_active;
-    int audio_playing = g_state.audio_playing;
-    int show_song_metadata = g_state.show_song_metadata;
-    int story_playing = g_state.story_playing;
-    uint64_t story_intro_until_ms = g_state.story_intro_until_ms;
-    uint64_t story_title_until_ms = g_state.story_title_until_ms;
-    char story_message[STORY_MESSAGE_MAX];
-    safe_str(story_message, sizeof(story_message), g_state.story_message);
-    uint64_t audio_scroll_started_ms = g_state.audio_scroll_started_ms;
-    char audio_display[SONG_METADATA_TEXT_MAX];
-    safe_str(audio_display, sizeof(audio_display), g_state.audio_display);
-    clock_24h_mode = g_state.clock_24h_mode;
-    char oled_font_file[128];
-    int oled_font_size = g_state.oled_font_size;
-    int clock_font_size = clamp_int(oled_font_size, 18, 54);
-    safe_str(oled_font_file, sizeof(oled_font_file), g_state.oled_font_file);
-    pthread_mutex_unlock(&g_state.lock);
-
-    uint64_t display_now_ms = monotonic_millis();
-    if (display_now_ms < story_intro_until_ms) {
-        draw_story_mode_screen(story_message);
-        return;
-    }
-    if (story_playing)
-        show_song_metadata = display_now_ms < story_title_until_ms;
-
-    if (!clock_24h_mode) {
-        hour = raw_hour;
-        if (hour == 0) hour = 12;
-        else if (hour > 12) hour -= 12;
-    } else {
-        hour = raw_hour;
-    }
-
+static int draw_clock_time_layer(int hour, int minute, int clock_24h_mode,
+                                 int oled_font, const char *oled_font_file,
+                                 int clock_font_size, uint8_t colon_level) {
     int h1 = hour / 10;
     int h2 = hour % 10;
     int m1 = minute / 10;
     int m2 = minute % 10;
-
-    oled_clear_fb(0);
-    uint8_t colon_level = clock_colon_blink_level();
-
-    int bedtime = is_bedtime_now();
-    int image_x = CLOCK_SIDE_WIDGET_X;
-    /* Keep the image visually centered in the usable area above the footer. */
-    int image_area_h = OLED_H - CLOCK_FOOTER_H;
-    int image_y = ((image_area_h - CLOCK_SIDE_WIDGET_SIZE) / 2) + CLOCK_IMAGE_Y_NUDGE;
-    const int clock_right_x = CLOCK_RIGHT_X;
-    char random_image_file[IMAGE_FILE_MAX];
-    if (bedtime) {
-        if (sticky_image_file(1, random_image_file, sizeof(random_image_file)) == 0) {
-            draw_image_thumb_by_file(random_image_file, 1, image_x, image_y, CLOCK_SIDE_WIDGET_SIZE);
-        }
-    } else {
-        if (sticky_image_file(0, random_image_file, sizeof(random_image_file)) == 0) {
-            draw_image_thumb_by_file(random_image_file, 0, image_x, image_y, CLOCK_SIDE_WIDGET_SIZE);
-        }
-    }
+    const int clock_right_pixel = CLOCK_CONTENT_RIGHT_PIXEL;
 
     int used_ttf = 0;
-    if (oled_font_file[0]) {
-        if (draw_clock_truetype_time_fixed_right_aligned(oled_font_file, clock_font_size, hour, minute, clock_right_x, clock_24h_mode, colon_level) == 0) used_ttf = 1;
+    const char *clock_ttf = oled_font_file && oled_font_file[0] ? oled_font_file
+        : (oled_font == SYSTEM_DEFAULT_FONT_ID ? LEGACY_SYSTEM_DEFAULT_FONT_KEY : "");
+    if (clock_ttf[0]) {
+        if (draw_clock_truetype_time_slotted_right_aligned(
+                clock_ttf, clock_font_size, hour, minute, clock_right_pixel,
+                clock_24h_mode, colon_level) == 0)
+            used_ttf = 1;
     }
 
     if (!used_ttf && (oled_font == 2 || oled_font == 3)) {
@@ -2825,8 +3094,9 @@ static void draw_clock_screen(void) {
         int gap = bold ? 7 : 6;
         int colon_w = sx + (bold ? 1 : 0);
         int visible_hour_digits = (clock_24h_mode || h1 > 0) ? 2 : 1;
-        int total_w = digit_w * (visible_hour_digits + 2) + gap * (visible_hour_digits + 2) + colon_w;
-        int x = clock_right_x - total_w;
+        int total_w = digit_w * (visible_hour_digits + 2) +
+                      gap * (visible_hour_digits + 2) + colon_w;
+        int x = (clock_right_pixel + 1) - total_w;
         int y = 0;
 
         if (visible_hour_digits == 2) {
@@ -2847,7 +3117,7 @@ static void draw_clock_screen(void) {
         int t = (oled_font == 1) ? 3 : 4;
         int visible_hour_digits = (clock_24h_mode || h1 > 0) ? 2 : 1;
         int total_w = (visible_hour_digits == 2) ? 126 : 97;
-        int x = clock_right_x - total_w;
+        int x = (clock_right_pixel + 1) - total_w;
 
         if (visible_hour_digits == 2) {
             draw_seg_digit(x, y, w, h, t, h1, 15);
@@ -2862,17 +3132,147 @@ static void draw_clock_screen(void) {
         draw_seg_digit(x, y, w, h, t, m2, 15);
     }
 
-    draw_clock_footer_contents(&tmv, alarm_on, alarm_active,
+    int clock_left_pixel = clock_right_pixel;
+    struct oled_visible_bounds clock_bounds;
+    if (oled_find_visible_bounds(0, 0, OLED_W - 1,
+                                 CLOCK_SECONDS_LINE_Y - 1,
+                                 &clock_bounds) == 0)
+        clock_left_pixel = clock_bounds.left;
+    return clock_left_pixel;
+}
+
+static void build_clock_tick_cache(int hour, int minute, int clock_24h_mode,
+                                   int oled_font, const char *oled_font_file,
+                                   int clock_font_size) {
+    uint8_t *previous_target = g_oled_render_fb;
+
+    memset(g_clock_tick_cache.colon_off_fb, 0,
+           sizeof(g_clock_tick_cache.colon_off_fb));
+    g_oled_render_fb = g_clock_tick_cache.colon_off_fb;
+    (void)draw_clock_time_layer(hour, minute, clock_24h_mode, oled_font,
+                                oled_font_file, clock_font_size, 0);
+
+    memset(g_clock_tick_cache.colon_on_fb, 0,
+           sizeof(g_clock_tick_cache.colon_on_fb));
+    g_oled_render_fb = g_clock_tick_cache.colon_on_fb;
+    (void)draw_clock_time_layer(hour, minute, clock_24h_mode, oled_font,
+                                oled_font_file, clock_font_size, 15);
+
+    g_oled_render_fb = previous_target;
+    g_clock_tick_cache.valid = 1;
+}
+
+static int update_clock_second_tick(int second, int colon_phase) {
+    if (!g_clock_tick_cache.valid) return -1;
+
+    const uint8_t *source = colon_phase
+        ? g_clock_tick_cache.colon_on_fb
+        : g_clock_tick_cache.colon_off_fb;
+
+    for (size_t i = 0; i < OLED_FB_BYTES; i++) {
+        if (g_clock_tick_cache.colon_off_fb[i] !=
+            g_clock_tick_cache.colon_on_fb[i])
+            g_oled.fb[i] = source[i];
+    }
+
+    draw_seconds_position_line(second);
+    return 0;
+}
+
+static void draw_clock_screen(void) {
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+
+    int raw_hour = tmv.tm_hour;
+    int minute = tmv.tm_min;
+    int clock_24h_mode = 0;
+    int hour;
+
+    g_clock_tick_cache.valid = 0;
+
+    pthread_mutex_lock(&g_state.lock);
+    struct alarm_slot alarms[MAX_ALARMS];
+    memcpy(alarms, g_state.alarms, sizeof(alarms));
+    int oled_font = g_state.oled_font;
+    int alarm_active = g_state.alarm_active;
+    int audio_playing = g_state.audio_playing;
+    int show_song_metadata = g_state.show_song_metadata;
+    int story_playing = g_state.story_playing;
+    uint64_t story_intro_until_ms = g_state.story_intro_until_ms;
+    uint64_t story_title_until_ms = g_state.story_title_until_ms;
+    char story_message[STORY_MESSAGE_MAX];
+    safe_str(story_message, sizeof(story_message), g_state.story_message);
+    uint64_t audio_scroll_started_ms = g_state.audio_scroll_started_ms;
+    char audio_display[SONG_METADATA_TEXT_MAX];
+    safe_str(audio_display, sizeof(audio_display), g_state.audio_display);
+    clock_24h_mode = g_state.clock_24h_mode;
+    char oled_font_file[128];
+    int oled_font_size = g_state.oled_font_size;
+    int clock_font_size = clamp_int(oled_font_size, 18, 54);
+    safe_str(oled_font_file, sizeof(oled_font_file), g_state.oled_font_file);
+    pthread_mutex_unlock(&g_state.lock);
+
+    char alarm_label[32];
+    format_footer_alarm_label(alarms, now, clock_24h_mode,
+                              alarm_label, sizeof(alarm_label));
+
+    uint64_t display_now_ms = monotonic_millis();
+    if (display_now_ms < story_intro_until_ms) {
+        draw_story_mode_screen(story_message);
+        return;
+    }
+    if (story_playing)
+        show_song_metadata = display_now_ms < story_title_until_ms;
+
+    if (!clock_24h_mode) {
+        hour = raw_hour;
+        if (hour == 0) hour = 12;
+        else if (hour > 12) hour -= 12;
+    } else {
+        hour = raw_hour;
+    }
+
+    oled_clear_fb(0);
+    uint8_t colon_level = clock_colon_blink_level();
+
+    int bedtime = is_bedtime_now();
+    char random_image_file[IMAGE_FILE_MAX];
+    int image_ready = sticky_image_file(bedtime ? 1 : 0,
+                                        random_image_file,
+                                        sizeof(random_image_file)) == 0;
+
+    int clock_left_pixel = draw_clock_time_layer(
+        hour, minute, clock_24h_mode, oled_font, oled_font_file,
+        clock_font_size, colon_level);
+
+    build_clock_tick_cache(hour, minute, clock_24h_mode, oled_font,
+                           oled_font_file, clock_font_size);
+
+    /* The normal clock assumes the full HH:MM footprint for spacing. The image
+       uses a 96x48 maximum window with two blank pixels from the screen edge,
+       the seconds line, and the first visible clock pixel. Very wide fonts may
+       reduce the image width, but never the safety gap. All clock artwork uses
+       one canonical 128x64 RAW8 source. */
+    if (image_ready) {
+        int image_right_limit = clock_left_pixel - CLOCK_IMAGE_FONT_GAP - 1;
+        int image_width = image_right_limit - CLOCK_IMAGE_X + 1;
+        if (image_width > CLOCK_IMAGE_MAX_WIDTH) image_width = CLOCK_IMAGE_MAX_WIDTH;
+        if (image_width > 0 && CLOCK_IMAGE_HEIGHT > 0) {
+            (void)draw_image_region_by_file(random_image_file, bedtime ? 1 : 0,
+                                            CLOCK_IMAGE_X, CLOCK_IMAGE_Y,
+                                            image_width, CLOCK_IMAGE_HEIGHT);
+        }
+    }
+
+    draw_clock_footer_contents(&tmv, alarm_label, alarm_active,
                                audio_playing, show_song_metadata,
                                story_playing, audio_display, audio_scroll_started_ms);
 
-    /*
-       The clock screen contains a 54x54 image beside the right-aligned time,
-       a blinking colon, and a single-baseline footer. On SSD1322 modules,
-       small partial updates around packed 4-bit graphics can occasionally leave
-       edge noise, so a full flush is the cleaner and safer choice.
-    */
-oled_flush_full();
+    /* Full clock composition occurs only for minute, state, font, screen, or
+       image changes. Once-per-second updates use the cached colon layer and
+       seconds row without clearing or redrawing the artwork. */
+    (void)oled_flush();
 }
 
 
@@ -3045,7 +3445,12 @@ static int message_layout_params(char *font_file, size_t font_file_len, int *px_
     int font_size = 18;
 
     pthread_mutex_lock(&g_state.lock);
-    if (font_file && font_file_len > 0) safe_str(font_file, font_file_len, g_state.oled_font_file);
+    if (font_file && font_file_len > 0) {
+        if (g_state.oled_font_file[0])
+            safe_str(font_file, font_file_len, g_state.oled_font_file);
+        else if (g_state.oled_font == SYSTEM_DEFAULT_FONT_ID)
+            safe_str(font_file, font_file_len, LEGACY_SYSTEM_DEFAULT_FONT_KEY);
+    }
     font_size = g_state.oled_font_size;
     pthread_mutex_unlock(&g_state.lock);
 
@@ -3074,38 +3479,40 @@ static int message_fits_display(const char *message, char *reason, size_t reason
     int use_ttf = 0;
     message_layout_params(font_file, sizeof(font_file), &px_size, &scale, &use_ttf);
 
-    char work[192];
-    safe_str(work, sizeof(work), message);
-
-    int count = 0;
-    char line[MESSAGE_LINE_CHARS] = "";
-
+    char word_check[192];
+    safe_str(word_check, sizeof(word_check), message);
     char *saveptr = NULL;
-    for (char *tok = strtok_r(work, " ", &saveptr); tok; tok = strtok_r(NULL, " ", &saveptr)) {
+    for (char *tok = strtok_r(word_check, " ", &saveptr); tok; tok = strtok_r(NULL, " ", &saveptr)) {
         if (message_line_width(use_ttf ? font_file : "", px_size, tok, scale) > MESSAGE_TEXT_W) {
-            if (reason && reason_len > 0) snprintf(reason, reason_len, "A word is too long to fit on the OLED.");
+            if (reason && reason_len > 0) snprintf(reason, reason_len, "A word is too long to fit in the message area.");
             return 0;
-        }
-
-        char test[MESSAGE_LINE_CHARS];
-        if (line[0]) snprintf(test, sizeof(test), "%s %s", line, tok);
-        else snprintf(test, sizeof(test), "%s", tok);
-
-        if (message_line_width(use_ttf ? font_file : "", px_size, test, scale) <= MESSAGE_TEXT_W || !line[0]) {
-            safe_str(line, sizeof(line), test);
-        } else {
-            count++;
-            if (count >= MESSAGE_MAX_LINES) {
-                if (reason && reason_len > 0) snprintf(reason, reason_len, "Message needs more than %d OLED lines.", MESSAGE_MAX_LINES);
-                return 0;
-            }
-            safe_str(line, sizeof(line), tok);
         }
     }
 
-    if (line[0]) count++;
-    if (count > MESSAGE_MAX_LINES) {
+    char lines[MESSAGE_MAX_LINES + 1][MESSAGE_LINE_CHARS];
+    memset(lines, 0, sizeof(lines));
+    int n = wrap_message_lines(use_ttf ? font_file : "", px_size, message,
+                               MESSAGE_TEXT_W, lines, MESSAGE_MAX_LINES + 1, scale);
+    if (n > MESSAGE_MAX_LINES) {
         if (reason && reason_len > 0) snprintf(reason, reason_len, "Message needs more than %d OLED lines.", MESSAGE_MAX_LINES);
+        return 0;
+    }
+
+    const int line_gap = use_ttf ? 1 : 2;
+    int total_h = line_gap * (n > 0 ? n - 1 : 0);
+    for (int i = 0; i < n; i++) {
+        struct ttf_line_metrics metrics;
+        memset(&metrics, 0, sizeof(metrics));
+        if (use_ttf && with_ttf_line_metrics(font_file, px_size, lines[i], &metrics) == 0) {
+            if (metrics.ascent <= 0) metrics.ascent = px_size;
+        } else {
+            metrics.ascent = 7 * scale;
+            metrics.descent = 0;
+        }
+        total_h += metrics.ascent + metrics.descent;
+    }
+    if (total_h > MESSAGE_TEXT_H) {
+        if (reason && reason_len > 0) snprintf(reason, reason_len, "Message is too tall for the compact text area.");
         return 0;
     }
 
@@ -3119,27 +3526,41 @@ static int render_message_screen_file(const char *image_file, int image_bedtime,
     pthread_mutex_lock(&g_state.lock);
     char font_file[128];
     int font_size = g_state.oled_font_size;
-    safe_str(font_file, sizeof(font_file), g_state.oled_font_file);
+    if (g_state.oled_font_file[0])
+        safe_str(font_file, sizeof(font_file), g_state.oled_font_file);
+    else if (g_state.oled_font == SYSTEM_DEFAULT_FONT_ID)
+        safe_str(font_file, sizeof(font_file), LEGACY_SYSTEM_DEFAULT_FONT_KEY);
+    else
+        font_file[0] = '\0';
     pthread_mutex_unlock(&g_state.lock);
 
     oled_clear_fb(0);
 
     if (!message[0]) {
         if (!image_file[0] ||
-            draw_image_thumb_by_file(image_file, image_bedtime ? 1 : 0, 0, 0, 64) != 0) {
-            draw_text5x7(8, 27, 1, "NO IMAGE", 8);
+            draw_image_region_by_file(image_file, image_bedtime ? 1 : 0,
+                                      MESSAGE_IMAGE_X, MESSAGE_IMAGE_Y,
+                                      MESSAGE_IMAGE_WIDTH, MESSAGE_IMAGE_HEIGHT) != 0) {
+            draw_text5x7(MESSAGE_IMAGE_X + 4, 28, 1, "IMG?", 4);
         }
         if (flush_to_oled) oled_flush_full();
         return 0;
     }
 
-    /* Full 64x64 image at left; text uses x=70..251, leaving a 6 px gap and 4 px right margin. */
-    if (!image_file[0] || draw_image_thumb_by_file(image_file, image_bedtime ? 1 : 0, 0, 0, 64) != 0) {
-        draw_text5x7(8, 27, 1, "NO IMAGE", 8);
+    /* Preserve the normal 96x48 clock artwork without resampling it into a
+       smaller message thumbnail. Message text uses its own compact viewport
+       and font range beside the image. */
+    if (!image_file[0] ||
+        draw_image_region_by_file(image_file, image_bedtime ? 1 : 0,
+                                  MESSAGE_IMAGE_X, MESSAGE_IMAGE_Y,
+                                  MESSAGE_IMAGE_WIDTH, MESSAGE_IMAGE_HEIGHT) != 0) {
+        draw_text5x7(MESSAGE_IMAGE_X + 4, 28, 1, "IMG?", 4);
     }
 
     const int text_x = MESSAGE_TEXT_X;
+    const int text_y = MESSAGE_TEXT_Y;
     const int text_w = MESSAGE_TEXT_W;
+    const int text_h = MESSAGE_TEXT_H;
     const int max_lines = MESSAGE_MAX_LINES;
     char lines[MESSAGE_MAX_LINES][MESSAGE_LINE_CHARS];
     memset(lines, 0, sizeof(lines));
@@ -3158,7 +3579,7 @@ static int render_message_screen_file(const char *image_file, int image_bedtime,
 
     struct ttf_line_metrics layout[MESSAGE_MAX_LINES];
     memset(layout, 0, sizeof(layout));
-    const int line_gap = use_ttf ? 2 : 3;
+    const int line_gap = use_ttf ? 1 : 2;
     int total_h = line_gap * (n - 1);
 
     for (int i = 0; i < n; i++) {
@@ -3173,8 +3594,8 @@ static int render_message_screen_file(const char *image_file, int image_bedtime,
         total_h += layout[i].ascent + layout[i].descent;
     }
 
-    int line_y = (OLED_H - total_h) / 2;
-    if (line_y < 0) line_y = 0;
+    int line_y = text_y + (text_h - total_h) / 2;
+    if (line_y < text_y) line_y = text_y;
 
     for (int i = 0; i < n; i++) {
         int line_x = text_x + (text_w - layout[i].width) / 2;
@@ -4220,8 +4641,39 @@ static const char *oled_font_name_for_id(int id) {
         case 1: return "Seven Thin";
         case 2: return "Pixel";
         case 3: return "Pixel Bold";
+        case SYSTEM_DEFAULT_FONT_ID: return "DejaVu Sans Mono";
         default: return "Seven Segment";
     }
+}
+
+static void oled_font_choice_name(const char *font_file, int font_id, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!font_file || !font_file[0]) {
+        safe_str(out, out_len, oled_font_name_for_id(font_id));
+        return;
+    }
+
+    char path[MP_SYSTEM_FONT_PATH_MAX];
+    make_font_path(font_file, path, sizeof(path));
+    pthread_mutex_lock(&g_font.lock);
+    if (g_font.face && strcmp(g_font.loaded_file, font_file) == 0) {
+        const char *family = g_font.face->family_name ? g_font.face->family_name : "";
+        const char *style = g_font.face->style_name ? g_font.face->style_name : "";
+        if (family[0] && style[0] && strcasecmp(style, "Regular") != 0 && strcasecmp(style, "Book") != 0)
+            snprintf(out, out_len, "%s %s", family, style);
+        else if (family[0])
+            safe_str(out, out_len, family);
+    }
+    pthread_mutex_unlock(&g_font.lock);
+
+    if (!out[0] && path[0]) {
+        const char *base = strrchr(path, '/');
+        safe_str(out, out_len, base ? base + 1 : path);
+        char *dot = strrchr(out, '.');
+        if (dot && (strcasecmp(dot, ".ttf") == 0 || strcasecmp(dot, ".otf") == 0)) *dot = '\0';
+    }
+    if (!out[0]) safe_str(out, out_len, font_file);
 }
 
 static const char *display_mode_name(int mode) {
@@ -4396,6 +4848,7 @@ static int ipc_status(int client) {
     char e_time[128], e_date[192], e_clock_name[160], e_audio_file[512];
     char e_audio_title[384], e_audio_artist[384], e_audio_display[768];
     char e_story_message[192];
+    char font_choice_name[192];
     char e_font_file[256], e_font_name[256], e_next_alarm[192];
     mp_json_escape(e_time, sizeof(e_time), timestr);
     mp_json_escape(e_date, sizeof(e_date), datestr);
@@ -4405,8 +4858,9 @@ static int ipc_status(int client) {
     mp_json_escape(e_audio_artist, sizeof(e_audio_artist), audio_artist);
     mp_json_escape(e_audio_display, sizeof(e_audio_display), audio_display);
     mp_json_escape(e_story_message, sizeof(e_story_message), story_message);
+    oled_font_choice_name(font_file, font, font_choice_name, sizeof(font_choice_name));
     mp_json_escape(e_font_file, sizeof(e_font_file), font_file);
-    mp_json_escape(e_font_name, sizeof(e_font_name), font_file[0] ? font_file : oled_font_name_for_id(font));
+    mp_json_escape(e_font_name, sizeof(e_font_name), font_choice_name);
     mp_json_escape(e_next_alarm, sizeof(e_next_alarm), next_alarm_text);
 
     long long message_send_in = pending_message_at > now ? (long long)(pending_message_at - now) : 0LL;
@@ -4804,7 +5258,7 @@ static int ipc_config_alarm(int client, const struct mp_ipc_alarm_config *reques
         .weekdays = request->weekdays ? request->weekdays : 0x7f,
         .start_volume = clamp_int(request->start_volume, 0, 100),
         .end_volume = clamp_int(request->end_volume, 0, 100),
-        .fired_yday = -1,
+        .last_fired_date = 0,
         .music_file = ""
     };
     if (safe_asset_filename(request->music_file) && has_mp3_ext(request->music_file)) {
@@ -4813,6 +5267,11 @@ static int ipc_config_alarm(int client, const struct mp_ipc_alarm_config *reques
         if (access(path, R_OK) == 0) mp_safe_str(alarm.music_file, sizeof(alarm.music_file), request->music_file);
     }
     pthread_mutex_lock(&g_state.lock);
+    const struct alarm_slot *previous = &g_state.alarms[id - 1];
+    if (previous->hour == alarm.hour && previous->min == alarm.min &&
+        previous->weekdays == alarm.weekdays) {
+        alarm.last_fired_date = previous->last_fired_date;
+    }
     g_state.alarms[id - 1] = alarm;
     pthread_mutex_unlock(&g_state.lock);
     save_config();
@@ -4936,7 +5395,7 @@ static int ipc_config_display(int client, const struct mp_ipc_display_config *re
     mp_safe_str(font_file, sizeof(font_file), g_state.oled_font_file);
     pthread_mutex_unlock(&g_state.lock);
 
-    if (request->present_mask & MP_IPC_DISPLAY_FONT) font = clamp_int(request->oled_font, 0, 3);
+    if (request->present_mask & MP_IPC_DISPLAY_FONT) font = clamp_int(request->oled_font, 0, SYSTEM_DEFAULT_FONT_ID);
     if (request->present_mask & MP_IPC_DISPLAY_FONT_SIZE) font_size = clamp_int(request->oled_font_size, 18, 54);
     if (request->present_mask & MP_IPC_DISPLAY_BEDTIME_ENABLED) bedtime_enabled = request->bedtime_enabled ? 1 : 0;
     if (request->present_mask & MP_IPC_DISPLAY_BEDTIME_DIM) bedtime_dim = clamp_int(request->bedtime_dim_percent, 0, 100);
@@ -4954,10 +5413,15 @@ static int ipc_config_display(int client, const struct mp_ipc_display_config *re
     }
     if (request->present_mask & MP_IPC_DISPLAY_FONT_FILE) {
         font_file[0] = '\0';
-        if (request->oled_font_file[0] && safe_asset_filename(request->oled_font_file) && has_font_ext(request->oled_font_file)) {
-            char path[512];
-            make_font_path(request->oled_font_file, path, sizeof(path));
-            if (access(path, R_OK) == 0) mp_safe_str(font_file, sizeof(font_file), request->oled_font_file);
+        if (request->oled_font_file[0]) {
+            int valid_choice = mp_system_font_is_key(request->oled_font_file) ||
+                (safe_asset_filename(request->oled_font_file) && has_font_ext(request->oled_font_file));
+            if (valid_choice) {
+                char path[MP_SYSTEM_FONT_PATH_MAX];
+                make_font_path(request->oled_font_file, path, sizeof(path));
+                if (path[0] && access(path, R_OK) == 0)
+                    mp_safe_str(font_file, sizeof(font_file), request->oled_font_file);
+            }
         }
     }
 
@@ -4997,6 +5461,7 @@ static int ipc_asset_event(int client, const struct mp_ipc_asset_event *event) {
             pthread_mutex_unlock(&g_state.lock);
         } else if (event->kind == MP_IPC_ASSET_FONT) {
             pthread_mutex_lock(&g_state.lock);
+            g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
             mp_safe_str(g_state.oled_font_file, sizeof(g_state.oled_font_file), event->file);
             g_state.display_dirty = 1;
             pthread_mutex_unlock(&g_state.lock);
@@ -5047,9 +5512,13 @@ static int ipc_asset_event(int client, const struct mp_ipc_asset_event *event) {
             if (config_changed) save_config();
         } else if (event->kind == MP_IPC_ASSET_FONT) {
             pthread_mutex_lock(&g_state.lock);
-            if (strcmp(g_state.oled_font_file, event->file) == 0) g_state.oled_font_file[0] = '\0';
+            if (strcmp(g_state.oled_font_file, event->file) == 0) {
+                g_state.oled_font_file[0] = '\0';
+                g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
+            }
             g_state.display_dirty = 1;
             pthread_mutex_unlock(&g_state.lock);
+            (void)apply_default_font_selection();
             font_cache_reset();
             save_config();
         }
@@ -5076,6 +5545,17 @@ static int ipc_asset_event(int client, const struct mp_ipc_asset_event *event) {
             g_state.display_dirty = 1;
             pthread_mutex_unlock(&g_state.lock);
             if (event->kind == MP_IPC_ASSET_MUSIC) save_config();
+        } else if (event->kind == MP_IPC_ASSET_FONT) {
+            pthread_mutex_lock(&g_state.lock);
+            if (safe_asset_filename(g_state.oled_font_file) && has_font_ext(g_state.oled_font_file)) {
+                g_state.oled_font_file[0] = '\0';
+                g_state.oled_font = SYSTEM_DEFAULT_FONT_ID;
+            }
+            g_state.display_dirty = 1;
+            pthread_mutex_unlock(&g_state.lock);
+            (void)apply_default_font_selection();
+            font_cache_reset();
+            save_config();
         }
         app_log("assets", "Deleted all assets of kind %u (%u files)", event->kind, event->count);
     } else {
@@ -5211,6 +5691,7 @@ static int ipc_config_import(int client, const struct mp_ipc_config_blob *blob) 
     reset_persistent_state_locked();
     pthread_mutex_unlock(&g_state.lock);
     load_config();
+    (void)apply_default_font_selection();
     font_cache_reset();
     invalidate_image_assets(0);
     invalidate_image_assets(1);
@@ -5229,6 +5710,7 @@ static int ipc_factory_reset(int client) {
     pthread_mutex_lock(&g_state.lock);
     reset_persistent_state_locked();
     pthread_mutex_unlock(&g_state.lock);
+    (void)apply_default_font_selection();
     font_cache_reset();
     invalidate_image_assets(0);
     invalidate_image_assets(1);
@@ -5491,18 +5973,23 @@ static void check_alarm(void) {
     time_t now = time(NULL);
     struct tm tmv;
     localtime_r(&now, &tmv);
+    int today = local_date_key(&tmv);
 
     struct alarm_slot fire_alarm;
     int fire = 0;
+    int fire_id = 0;
 
     pthread_mutex_lock(&g_state.lock);
     for (int i = 0; i < MAX_ALARMS; i++) {
         struct alarm_slot *a = &g_state.alarms[i];
         int weekday_ok = (a->weekdays & (1 << tmv.tm_wday)) != 0;
-        if (a->enabled && weekday_ok && tmv.tm_hour == a->hour && tmv.tm_min == a->min && a->fired_yday != tmv.tm_yday) {
-            a->fired_yday = tmv.tm_yday;
+        if (today != 0 && a->enabled && weekday_ok &&
+            tmv.tm_hour == a->hour && tmv.tm_min == a->min &&
+            a->last_fired_date != today) {
+            a->last_fired_date = today;
             fire_alarm = *a;
             fire = 1;
+            fire_id = i + 1;
             break;
         }
     }
@@ -5510,7 +5997,12 @@ static void check_alarm(void) {
     pthread_mutex_unlock(&g_state.lock);
 
     if (fire) {
-        app_log("alarm", "Alarm fired at %02d:%02d", fire_alarm.hour, fire_alarm.min);
+        /* Commit the occurrence before opening audio. A sudden power loss while
+           the alarm is playing must not make the same alarm eligible again when
+           the service restarts later that day. */
+        save_config();
+        app_log("alarm", "Alarm %d fired at %02d:%02d", fire_id,
+                fire_alarm.hour, fire_alarm.min);
         if (audio_play_music_file(fire_alarm.music_file, fire_alarm.start_volume,
                                   fire_alarm.end_volume, 1) != 0)
             app_log("alarm", "Alarm could not start because no playable audio was available");
@@ -5538,7 +6030,16 @@ int main(void) {
     ensure_dir(CONFIG_DIR);
     init_alarm_defaults();
     load_config();
-    app_log("system", "mk-piclock %s starting", APP_VERSION);
+    int alarm_history_migrated = migrate_alarm_last_fired_dates();
+    int default_font_applied = apply_default_font_selection();
+    if (default_font_applied || alarm_history_migrated) {
+        save_config();
+        if (default_font_applied)
+            app_log("display", "Applied the default clock font selection");
+        if (alarm_history_migrated)
+            app_log("alarm", "Migrated the last alarm occurrence into persistent replay protection");
+    }
+    app_log("system", "mk-piclock %s starting on %s", APP_VERSION, MP_PLATFORM_PROFILE);
 
     int touch_available = (touch_init() == 0);
     if (touch_available) app_log("system", "TTP223B touch input initialized on GPIO %d", GPIO_TOUCH);
@@ -5591,7 +6092,6 @@ int main(void) {
     int last_mode = -1;
     int last_colon_phase = -1;
     int last_story_phase = -1;
-    int last_wifi_status_state = -1;
     uint64_t last_diagnostic_refresh_ms = 0;
     while (g_running) {
         check_alarm();
@@ -5660,20 +6160,40 @@ int main(void) {
                 localtime_r(&now, &tmv);
                 int colon_phase = clock_colon_blink_phase();
                 int story_phase = story_display_phase();
-                int wifi_status_state = wifi_status_render_state();
                 marquee_active = song_metadata_marquee_active();
-                if (dirty || mode != last_mode || tmv.tm_min != last_min || tmv.tm_sec != last_sec ||
-                    colon_phase != last_colon_phase || story_phase != last_story_phase ||
-                    clock_image_refresh_due()) {
+                int full_clock_redraw = dirty || mode != last_mode ||
+                    tmv.tm_min != last_min || story_phase != last_story_phase ||
+                    clock_image_refresh_due();
+                int second_tick = story_phase == 0 &&
+                    (tmv.tm_sec != last_sec || colon_phase != last_colon_phase);
+
+                if (full_clock_redraw) {
                     last_min = tmv.tm_min;
                     last_sec = tmv.tm_sec;
                     last_colon_phase = colon_phase;
                     last_story_phase = story_phase;
-                    last_wifi_status_state = wifi_status_state;
                     draw_clock_screen();
-                } else if (marquee_active || wifi_status_state != last_wifi_status_state) {
-                    last_wifi_status_state = wifi_status_state;
-                    refresh_clock_footer();
+                } else {
+                    int framebuffer_changed = 0;
+
+                    if (second_tick) {
+                        last_sec = tmv.tm_sec;
+                        last_colon_phase = colon_phase;
+                        if (update_clock_second_tick(tmv.tm_sec, colon_phase) == 0) {
+                            framebuffer_changed = 1;
+                        } else {
+                            last_min = tmv.tm_min;
+                            last_story_phase = story_phase;
+                            draw_clock_screen();
+                        }
+                    }
+
+                    if (marquee_active) {
+                        redraw_clock_footer();
+                        framebuffer_changed = 1;
+                    }
+
+                    if (framebuffer_changed) (void)oled_flush();
                 }
             } else if (mode == 1) {
                 if (dirty || mode != last_mode) {

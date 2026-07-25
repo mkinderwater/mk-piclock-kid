@@ -1,6 +1,7 @@
 export async function mount(ctx) {
     let fonts = null;
     const previewFonts = new Map();
+    const fontChoices = new Map();
     const fontBlobUrls = new Set();
     ctx.signal.addEventListener('abort', () => {
         fontBlobUrls.forEach(url => URL.revokeObjectURL(url));
@@ -26,8 +27,6 @@ export async function mount(ctx) {
         const percent = Math.max(0, Math.min(100, Number.parseInt(value ?? 35, 10) || 0));
         ctx.setValue('#bedtime-dim-percent', percent);
         ctx.setText('#bedtime-dim-value', `${percent}%`);
-        ctx.setValue('#font-bedtime-dim-percent', percent);
-        ctx.setValue('#advanced-bedtime-dim-percent', percent);
         return percent;
     };
 
@@ -43,19 +42,8 @@ export async function mount(ctx) {
             '#bedtime-end': end,
             '#clock-24h-mode': status.clock_24h_mode ? 1 : 0,
             '#oled-color': status.oled_color || 'green',
-            '#bed-oled-font-file': status.oled_font_file,
-            '#bed-oled-font': status.oled_font ?? 0,
-            '#bed-oled-font-size': status.oled_font_size ?? 48,
-            '#bed-clock-24h-mode': status.clock_24h_mode ? 1 : 0,
-            '#font-bedtime-enabled': status.bedtime_enabled ? 1 : 0,
-            '#font-bedtime-start': start,
-            '#font-bedtime-end': end,
-            '#advanced-bedtime-enabled': status.bedtime_enabled ? 1 : 0,
-            '#advanced-bedtime-start': start,
-            '#advanced-bedtime-end': end,
-            '#advanced-clock-24h-mode': status.clock_24h_mode ? 1 : 0,
             '#oled-font-file': status.oled_font_file,
-            '#oled-font': status.oled_font ?? 0,
+            '#oled-font': status.oled_font ?? 4,
             '#oled-font-size': status.oled_font_size ?? 48
         };
         Object.entries(values).forEach(([selector, value]) => ctx.setValue(selector, value));
@@ -92,67 +80,149 @@ export async function mount(ctx) {
         brightnessTimer = window.setTimeout(() => sendBrightnessPreview(percent), 90);
     };
 
-    const fontFamily = name => `MKFont_${String(name).replace(/[^a-z0-9]/gi, '_')}`;
-    const registerFont = name => {
-        const family = fontFamily(name);
-        if (!name || previewFonts.has(name)) return family;
-        previewFonts.set(name, {family, loading: true});
-        ctx.binary(`/api/v1/assets/fonts/file?file=${encodeURIComponent(name)}`, {signal: ctx.signal})
+    const fontFamily = value => `MKFont_${String(value).replace(/[^a-z0-9]/gi, '_')}`;
+    const registerFont = value => {
+        const choice = fontChoices.get(value);
+        const family = fontFamily(value);
+        if (!choice || choice.kind === 'builtin' || previewFonts.has(value)) return family;
+        previewFonts.set(value, {family, loading: true});
+        const query = choice.kind === 'system'
+            ? `key=${encodeURIComponent(choice.key)}`
+            : `file=${encodeURIComponent(choice.file)}`;
+        ctx.binary(`/api/v1/assets/fonts/file?${query}`, {signal: ctx.signal})
             .then(buffer => {
                 if (ctx.signal.aborted) return;
-                const blobUrl = URL.createObjectURL(new Blob([buffer], {type: 'font/ttf'}));
+                const mime = String(choice.file || '').toLowerCase().endsWith('.otf') ? 'font/otf' : 'font/ttf';
+                const blobUrl = URL.createObjectURL(new Blob([buffer], {type: mime}));
                 fontBlobUrls.add(blobUrl);
                 const font = new FontFace(family, `url(${blobUrl})`);
-                previewFonts.set(name, {family, font, blobUrl});
+                previewFonts.set(value, {family, font, blobUrl});
                 document.fonts.add(font);
                 return font.load();
             })
             .catch(() => {});
         return family;
     };
-    const sample = name => `<div class="font-sample-box" style="font-family:'${ctx.html(registerFont(name))}',sans-serif"><div>ABCDEFGHIJKLMNOPQRSTUVWXYZ</div><div>1234567890</div></div>`;
+    const sample = value => `<div class="font-sample-box" style="font-family:'${ctx.html(registerFont(value))}',sans-serif"><div>ABCDEFGHIJKLMNOPQRSTUVWXYZ</div><div>1234567890</div></div>`;
+
+    const setFontChoice = value => {
+        const choice = String(value || 'builtin:0');
+        if (choice.startsWith('system:')) {
+            ctx.setValue('#oled-font-file', choice);
+            ctx.setValue('#oled-font', 4);
+        } else if (choice.startsWith('upload:')) {
+            ctx.setValue('#oled-font-file', choice.slice(7));
+            ctx.setValue('#oled-font', 4);
+        } else {
+            const id = Number.parseInt(choice.slice(8), 10);
+            ctx.setValue('#oled-font-file', '');
+            ctx.setValue('#oled-font', Number.isFinite(id) ? id : 0);
+        }
+    };
 
     const updatePreview = () => {
         if (!fonts) return;
-        const selected = ctx.$('#advanced-oled-font-file').value;
-        if (selected) {
-            ctx.$('#selected-font-preview').innerHTML = `<div class="font-preview-card"><div class="font-name">${ctx.html(selected)}</div>${sample(selected)}</div>`;
-            ctx.setText('#selected-font', selected);
+        const value = ctx.$('#clock-font')?.value || `builtin:${fonts.builtin ?? 0}`;
+        const choice = fontChoices.get(value);
+        if (!choice || choice.kind === 'missing') {
+            ctx.$('#selected-font-preview').innerHTML = '<div class="empty-state">Selected font is unavailable.</div>';
             return;
         }
-        const id = Number.parseInt(ctx.$('#advanced-oled-font').value || fonts.builtin || 0, 10);
-        const name = fonts.builtin_fonts?.find(font => font.id === id)?.name || 'Built-in';
-        ctx.$('#selected-font-preview').innerHTML = `<div class="font-preview-card"><div class="font-name">${ctx.html(name)}</div><div class="font-sample-box builtin-sample"><div>ABCDEFGHIJKLMNOPQRSTUVWXYZ</div><div>1234567890</div></div><div class="small muted">Built-in OLED font preview is approximated in the browser.</div></div>`;
-        ctx.setText('#selected-font', name);
+        if (choice.kind === 'builtin') {
+            ctx.$('#selected-font-preview').innerHTML = `<div class="font-preview-card"><div class="font-name">${ctx.html(choice.name)}</div><div class="font-sample-box mono"><div>ABCDEFGHIJKLMNOPQRSTUVWXYZ</div><div>1234567890</div></div><div class="small muted">Built-in OLED font preview is approximated in the browser.</div></div>`;
+            return;
+        }
+        const note = choice.kind === 'system'
+            ? `Linux font: ${ctx.html(choice.file)}`
+            : 'Uploaded font';
+        ctx.$('#selected-font-preview').innerHTML = `<div class="font-preview-card"><div class="font-name">${ctx.html(choice.name)}</div>${sample(value)}<div class="small muted">${note}</div></div>`;
     };
 
     const loadFonts = async () => {
         fonts = await ctx.json('/api/v1/assets/fonts');
-        ctx.setValue('#oled-font-size', fonts.font_size ?? 48);
-        ctx.setValue('#advanced-oled-font-size', fonts.font_size ?? 48);
-        ctx.$('#advanced-oled-font-file').innerHTML = [
-            '<option value="">Use built-in font</option>',
-            ...(fonts.uploaded_fonts || []).map(name => `<option value="${ctx.html(name)}"${name === fonts.selected ? ' selected' : ''}>${ctx.html(name)}</option>`)
-        ].join('');
-        ctx.$('#advanced-oled-font').innerHTML = (fonts.builtin_fonts || []).map(font =>
-            `<option value="${font.id}"${font.id === fonts.builtin ? ' selected' : ''}>${ctx.html(font.name)}</option>`
+        fontChoices.clear();
+
+        const builtinFonts = [...(fonts.builtin_fonts || [])];
+        if (Number(fonts.builtin) === 4 && !fonts.default_system_key &&
+            !builtinFonts.some(font => Number(font.id) === 4)) {
+            builtinFonts.push({id: 4, name: 'DejaVu Sans Mono (Linux fallback)'});
+        }
+        builtinFonts.sort((a, b) => Number(a.id) - Number(b.id));
+        const systemFonts = [...(fonts.system_fonts || [])].sort((a, b) =>
+            String(a.name || a.file).localeCompare(String(b.name || b.file), undefined, {sensitivity: 'base'})
+        ).map(font => ({
+            ...font,
+            name: font.key === fonts.default_system_key
+                ? `${font.name || font.file} (Linux default)`
+                : (font.name || font.file)
+        }));
+        const uploadedFonts = [...(fonts.uploaded_fonts || [])].sort((a, b) =>
+            String(a).localeCompare(String(b), undefined, {sensitivity: 'base'})
+        );
+
+        builtinFonts.forEach(font => fontChoices.set(`builtin:${font.id}`, {
+            kind: 'builtin', name: font.name, id: Number(font.id)
+        }));
+        systemFonts.forEach(font => fontChoices.set(font.key, {
+            kind: 'system', name: font.name || font.file, key: font.key, file: font.file
+        }));
+        uploadedFonts.forEach(file => fontChoices.set(`upload:${file}`, {
+            kind: 'upload', name: file, file
+        }));
+
+        let selectedChoice;
+        if (String(fonts.selected || '').startsWith('system:')) selectedChoice = fonts.selected;
+        else if (fonts.selected) selectedChoice = `upload:${fonts.selected}`;
+        else if (Number(fonts.builtin) === 4 && fonts.default_system_key) selectedChoice = fonts.default_system_key;
+        else selectedChoice = `builtin:${Number.isFinite(Number(fonts.builtin)) ? Number(fonts.builtin) : 0}`;
+
+        if (!fontChoices.has(selectedChoice)) {
+            fontChoices.set(selectedChoice, {kind: 'missing', name: 'Unavailable saved font'});
+        }
+
+        const builtinOptions = builtinFonts.map(font =>
+            `<option value="builtin:${font.id}">${ctx.html(font.name)}</option>`
         ).join('');
-        ctx.setValue('#oled-font-file', fonts.selected || '');
-        ctx.setValue('#oled-font', fonts.builtin ?? 0);
-        ctx.$('#delete-fonts').innerHTML = fonts.uploaded_fonts?.length
-            ? fonts.uploaded_fonts.map(name => `
+        const systemOptions = systemFonts.map(font =>
+            `<option value="${ctx.html(font.key)}">${ctx.html(font.name || font.file)}</option>`
+        ).join('');
+        const uploadedOptions = uploadedFonts.map(file =>
+            `<option value="upload:${ctx.html(file)}">${ctx.html(file)}</option>`
+        ).join('');
+        const unavailableOption = fontChoices.get(selectedChoice)?.kind === 'missing'
+            ? `<optgroup label="Unavailable"><option value="${ctx.html(selectedChoice)}">Unavailable saved font</option></optgroup>`
+            : '';
+
+        ctx.$('#clock-font').innerHTML = [
+            `<optgroup label="Built-in OLED fonts">${builtinOptions}</optgroup>`,
+            systemOptions ? `<optgroup label="Linux system fonts">${systemOptions}</optgroup>` : '',
+            uploadedOptions ? `<optgroup label="Uploaded fonts">${uploadedOptions}</optgroup>` : '',
+            unavailableOption
+        ].join('');
+        ctx.setValue('#clock-font', selectedChoice);
+        ctx.setValue('#oled-font-size', fonts.font_size ?? 48);
+        setFontChoice(selectedChoice);
+
+        ctx.$('#delete-fonts').innerHTML = uploadedFonts.length
+            ? uploadedFonts.map(file => `
                 <div class="mini-card font-delete-row">
-                    <div><div class="font-name">${ctx.html(name)}</div>${sample(name)}</div>
-                    <button class="btn danger small-btn" type="button" data-delete-font="${ctx.html(name)}">Delete</button>
+                    <div><div class="font-name">${ctx.html(file)}</div>${sample(`upload:${file}`)}</div>
+                    <button class="btn danger small-btn" type="button" data-delete-font="${ctx.html(file)}">Delete</button>
                 </div>`).join('')
-            : '<p class="small">No uploaded fonts yet.</p>';
+            : '<div class="empty-state">No uploaded fonts.</div>';
         updatePreview();
     };
 
     const refresh = async () => {
-        const [statusResult, fontResult] = await Promise.allSettled([ctx.status.refresh(), loadFonts()]);
-        if (statusResult.status === 'fulfilled') applyStatus(statusResult.value || ctx.status.get());
-        if (fontResult.status === 'rejected') ctx.setText('#selected-font', 'Could not load fonts');
+        try {
+            const status = await ctx.status.refresh();
+            applyStatus(status || ctx.status.get());
+        } catch (_) {}
+        try {
+            await loadFonts();
+        } catch (_) {
+            ctx.$('#clock-font').innerHTML = '<option>Could not load fonts</option>';
+        }
     };
 
     ctx.on('click', '[data-clock-action]', async (_, button) => {
@@ -178,12 +248,10 @@ export async function mount(ctx) {
         } catch (_) {}
     });
     ctx.on('change', '#oled-color', (_, select) => previewOledColour(select.value));
-    ctx.on('change', '#advanced-oled-font-file, #advanced-oled-font', (_, field) => {
-        ctx.setValue('#oled-font-file', ctx.$('#advanced-oled-font-file').value);
-        ctx.setValue('#oled-font', ctx.$('#advanced-oled-font').value);
+    ctx.on('change', '#clock-font', (_, select) => {
+        setFontChoice(select.value);
         updatePreview();
     });
-    ctx.on('input', '#advanced-oled-font-size', (_, input) => ctx.setValue('#oled-font-size', input.value));
     ctx.on('click', '[data-delete-font]', async (_, button) => {
         const name = button.dataset.deleteFont;
         if (!confirm(`Delete ${name}?`)) return;

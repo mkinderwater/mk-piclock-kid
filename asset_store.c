@@ -134,7 +134,7 @@ static int asset_matches(const char *dir, const char *name, int kind) {
     struct stat st;
     if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
     if (kind == MP_ASSET_SCAN_IMAGE_RAW)
-        return mp_asset_safe_image_filename(name) && st.st_size == MP_IMAGE_RAW_BYTES;
+        return mp_asset_safe_image_filename(name) && MP_IMAGE_RAW_SIZE_VALID(st.st_size);
     if (kind == MP_ASSET_SCAN_MUSIC_MP3) return mp_asset_has_mp3_ext(name);
     if (kind == MP_ASSET_SCAN_FONT) return mp_asset_has_font_ext(name);
     return 0;
@@ -220,6 +220,56 @@ int mp_asset_move_file(const char *source, const char *target) {
     return unlink(source) == 0 || errno == ENOENT ? 0 : -1;
 }
 
+static unsigned char rgba_luma_at(const unsigned char *rgba, size_t stride,
+                                  int width, int height, int x, int y) {
+    if (x < 0) x = 0;
+    else if (x >= width) x = width - 1;
+    if (y < 0) y = 0;
+    else if (y >= height) y = height - 1;
+
+    const unsigned char *px = rgba + (size_t)y * stride + (size_t)x * 4;
+    int a = px[3];
+    int r = (px[0] * a + 127) / 255;
+    int g = (px[1] * a + 127) / 255;
+    int b = (px[2] * a + 127) / 255;
+    return (unsigned char)((r * 77 + g * 150 + b * 29 + 128) >> 8);
+}
+
+static unsigned char rgba_luma_bilinear(const unsigned char *rgba, size_t stride,
+                                        int width, int height,
+                                        int crop_x, int crop_y,
+                                        int crop_width, int crop_height,
+                                        int dx, int dy) {
+    int64_t fx = ((int64_t)(2 * dx + 1) * crop_width * 65536) /
+                 (2 * MP_IMAGE_WIDTH) - 32768;
+    int64_t fy = ((int64_t)(2 * dy + 1) * crop_height * 65536) /
+                 (2 * MP_IMAGE_HEIGHT) - 32768;
+    if (fx < 0) fx = 0;
+    if (fy < 0) fy = 0;
+    int64_t max_x_fp = (int64_t)(crop_width - 1) << 16;
+    int64_t max_y_fp = (int64_t)(crop_height - 1) << 16;
+    if (fx > max_x_fp) fx = max_x_fp;
+    if (fy > max_y_fp) fy = max_y_fp;
+
+    int x0 = crop_x + (int)(fx >> 16);
+    int y0 = crop_y + (int)(fy >> 16);
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    if (x1 >= crop_x + crop_width) x1 = crop_x + crop_width - 1;
+    if (y1 >= crop_y + crop_height) y1 = crop_y + crop_height - 1;
+    int wx = (int)(fx & 0xFFFF);
+    int wy = (int)(fy & 0xFFFF);
+
+    int p00 = rgba_luma_at(rgba, stride, width, height, x0, y0);
+    int p10 = rgba_luma_at(rgba, stride, width, height, x1, y0);
+    int p01 = rgba_luma_at(rgba, stride, width, height, x0, y1);
+    int p11 = rgba_luma_at(rgba, stride, width, height, x1, y1);
+    int top = p00 * (65536 - wx) + p10 * wx;
+    int bottom = p01 * (65536 - wx) + p11 * wx;
+    int64_t value = (int64_t)top * (65536 - wy) + (int64_t)bottom * wy;
+    return (unsigned char)((value + (1LL << 31)) >> 32);
+}
+
 static int convert_png_to_raw(const char *png_path, const char *raw_path) {
     png_image image;
     memset(&image, 0, sizeof(image));
@@ -244,32 +294,56 @@ static int convert_png_to_raw(const char *png_path, const char *raw_path) {
 
     int src_w = (int)image.width;
     int src_h = (int)image.height;
-    int crop = src_w < src_h ? src_w : src_h;
-    int crop_x = (src_w - crop) / 2;
-    int crop_y = (src_h - crop) / 2;
+    int crop_width = src_w;
+    int crop_height = src_h;
+
+    /* Fill the retained 2:1 source without distortion. Wide uploads crop at
+       the sides; tall or square uploads crop equally at the top and bottom. */
+    if ((long long)src_w * MP_IMAGE_HEIGHT >
+        (long long)src_h * MP_IMAGE_WIDTH) {
+        crop_width = (src_h * MP_IMAGE_WIDTH) / MP_IMAGE_HEIGHT;
+    } else if ((long long)src_w * MP_IMAGE_HEIGHT <
+               (long long)src_h * MP_IMAGE_WIDTH) {
+        crop_height = (src_w * MP_IMAGE_HEIGHT) / MP_IMAGE_WIDTH;
+    }
+    if (crop_width < 1) crop_width = 1;
+    if (crop_height < 1) crop_height = 1;
+    int crop_x = (src_w - crop_width) / 2;
+    int crop_y = (src_h - crop_height) / 2;
     unsigned char raw[MP_IMAGE_RAW_BYTES];
-    memset(raw, 0, sizeof(raw));
+
     for (int y = 0; y < MP_IMAGE_HEIGHT; y++) {
-        for (int x = 0; x < MP_IMAGE_WIDTH; x += 2) {
-            unsigned char packed = 0;
-            for (int p = 0; p < 2; p++) {
-                int sx = crop_x + ((x + p) * crop) / MP_IMAGE_WIDTH;
-                int sy = crop_y + (y * crop) / MP_IMAGE_HEIGHT;
-                unsigned char *px = rgba + (size_t)sy * stride + (size_t)sx * 4;
-                int a = px[3];
-                int r = (px[0] * a + 128) >> 8;
-                int g = (px[1] * a + 128) >> 8;
-                int b = (px[2] * a + 128) >> 8;
-                int gray4 = ((r * 77 + g * 150 + b * 29) >> 8) >> 4;
-                if (p == 0) packed |= (unsigned char)((gray4 & 0x0f) << 4);
-                else packed |= (unsigned char)(gray4 & 0x0f);
+        for (int x = 0; x < MP_IMAGE_WIDTH; x++) {
+            if (crop_width >= MP_IMAGE_WIDTH && crop_height >= MP_IMAGE_HEIGHT) {
+                int sx0 = crop_x + (x * crop_width) / MP_IMAGE_WIDTH;
+                int sx1 = crop_x + ((x + 1) * crop_width) / MP_IMAGE_WIDTH;
+                int sy0 = crop_y + (y * crop_height) / MP_IMAGE_HEIGHT;
+                int sy1 = crop_y + ((y + 1) * crop_height) / MP_IMAGE_HEIGHT;
+                if (sx1 <= sx0) sx1 = sx0 + 1;
+                if (sy1 <= sy0) sy1 = sy0 + 1;
+                if (sx1 > crop_x + crop_width) sx1 = crop_x + crop_width;
+                if (sy1 > crop_y + crop_height) sy1 = crop_y + crop_height;
+
+                uint64_t sum = 0;
+                uint64_t count = 0;
+                for (int sy = sy0; sy < sy1; sy++) {
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        sum += rgba_luma_at(rgba, stride, src_w, src_h, sx, sy);
+                        count++;
+                    }
+                }
+                raw[y * MP_IMAGE_WIDTH + x] = count
+                    ? (unsigned char)((sum + count / 2) / count) : 0;
+            } else {
+                raw[y * MP_IMAGE_WIDTH + x] = rgba_luma_bilinear(
+                    rgba, stride, src_w, src_h, crop_x, crop_y,
+                    crop_width, crop_height, x, y);
             }
-            raw[(y * MP_IMAGE_WIDTH + x) / 2] = packed;
         }
     }
+
     free(rgba);
     png_image_free(&image);
-
     return atomic_write_file(raw_path, raw, sizeof(raw), 0640);
 }
 

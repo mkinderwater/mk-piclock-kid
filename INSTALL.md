@@ -1,10 +1,10 @@
-# mk-piclock v1.8.1: Build and Install
+# mk-piclock v1.9.14-rpi-zero-r3: Build and Install
 
 > A practical installation guide for the Raspberry Pi Zero W and Zero 2 W builds of mk-piclock Kids.
 
 | Product | HTTP API | Private IPC |
 |:--|:--|:--|
-| `1.8.1` | `1.25` | `16` |
+| `1.9.14-rpi-zero-r3` | `1.26` | `16` |
 
 mk-piclock uses two native C services:
 
@@ -161,6 +161,12 @@ sudo apt install --no-install-recommends -y \
   unzip
 ```
 
+Install the DejaVu system fonts used by the default clock face:
+
+```bash
+sudo apt-get install fonts-dejavu
+```
+
 Confirm libgpiod 2.x:
 
 ```bash
@@ -260,20 +266,20 @@ See `pinouts.md` for the complete power, OLED, amplifier, speaker, touch, and RG
 
 Place the release ZIP and `.sha256` file in the same directory.
 
-For this v1.8.1 package:
+For this v1.9.14-rpi-zero-r3 release:
 
 ```bash
 cd ~
-sha256sum -c mk-piclock-v1.8.1-production-final.zip.sha256
-rm -rf mk-piclock-v1.8.1-production-final
-unzip mk-piclock-v1.8.1-production-final.zip
-cd mk-piclock-v1.8.1-production-final
+sha256sum -c mk-piclock-v1.9.14-rpi-zero-r3-release.zip.sha256
+rm -rf mk-piclock-v1.9.14-rpi-zero-r3
+unzip mk-piclock-v1.9.14-rpi-zero-r3-release.zip
+cd mk-piclock-v1.9.14-rpi-zero-r3
 ```
 
 A successful checksum test reports:
 
 ```text
-mk-piclock-v1.8.1-production-final.zip: OK
+mk-piclock-v1.9.14-rpi-zero-r3-release.zip: OK
 ```
 
 When installing a differently named package, replace the filenames and directory name in the commands above.
@@ -496,7 +502,7 @@ It does not intentionally remove:
 ### Recommended upgrade steps
 
 ```bash
-cd ~/mk-piclock-v1.8.1-production-final
+cd ~/mk-piclock-v1.9.14-rpi-zero-r3
 make clean
 make -j2
 make install
@@ -510,8 +516,8 @@ Use `make -j1` on a Pi Zero W.
 Confirm the installed versions under **System**:
 
 ```text
-Product:     1.8.1
-HTTP API:    1.25
+Product:     1.9.14-rpi-zero-r3
+HTTP API:    1.26
 Private IPC: 16
 ```
 
@@ -724,7 +730,9 @@ Common packages are:
 
 ### Re-add existing image assets
 
-The recommended method is uploading the original PNG files through **Day Images** and **Bedtime Images**. The API creates the matching OLED `.raw` files.
+The recommended method is uploading the original PNG files through **Day Images** and **Bedtime Images**. The API retains the PNG and creates a matching 128x64, 8-bit grayscale OLED `.raw` source. A 2:1 PNG is recommended so the complete composition survives the clock crop. Final 4-bit quantization occurs only after the image is cropped and resized for the active clock layout.
+
+Older 64x64 RAW8 and packed RAW4 files are not supported. Before upgrading, delete all Day Images and Bedtime Images from the GUI. After the upgrade, upload the PNG artwork again so every clock file is regenerated as canonical 128x64 RAW8.
 
 Existing converted artwork works only when both files share the same base name:
 
@@ -755,3 +763,21 @@ A PNG without its converted `.raw` partner does not appear in the OLED image rot
 | `RELEASE_NOTES.md` | Current release changes |
 | `ADDON_API.md` | HTTP API details |
 | `api/openapi-v1.json` | OpenAPI schema |
+### Clock skew warning
+
+The build checks for source files dated in the future and normalizes them before compiling. If the Raspberry Pi clock itself is wrong, synchronize it first:
+
+```bash
+sudo timedatectl set-ntp true
+sudo systemctl restart systemd-timesyncd
+timedatectl status
+```
+
+To normalize an already extracted source tree manually:
+
+```bash
+find . -type f -exec touch {} +
+make clean
+make -j2
+```
+

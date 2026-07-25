@@ -19,9 +19,10 @@ export async function mountImageLibrary(ctx, options) {
                       data-busy-text="Adding ${ctx.html(options.labelPlural)}..."
                       data-success-text="${ctx.html(titleCase(options.labelPlural))} added"
                       data-error-text="The images could not be added">
-                    <label>Choose PNG files</label>
-                    <input type="file" name="files" accept="image/png,.png" multiple required>
-                    <button class="btn" type="submit">Add ${ctx.html(titleCase(options.labelPlural))}</button>
+                    <label for="image-upload-files">Choose PNG files</label>
+                    <input id="image-upload-files" type="file" name="files" accept="image/png,.png" multiple required>
+                    <p class="small">Use 2:1 PNG artwork such as 128 × 64. The preview and clock file keep that 2:1 shape.</p>
+                    <button class="btn" type="submit">Add ${ctx.html(options.labelPlural)}</button>
                 </form>
                 <div class="field-row image-library-summary">
                     <div>
@@ -36,9 +37,9 @@ export async function mountImageLibrary(ctx, options) {
                 <details class="danger-details">
                     <summary>Library options</summary>
                     <p class="small">Download a ZIP containing only the original PNG files.</p>
-                    <button class="btn alt small-btn" id="download-all-images" type="button">${ctx.html(options.downloadLabel || 'Download All PNGs')}</button>
+                    <button class="btn alt small-btn" id="download-all-images" type="button">${ctx.html(options.downloadLabel || 'Download all PNGs')}</button>
                     <p class="small library-delete-note">Use this only when you want to remove every image in this section.</p>
-                    <button class="btn danger small-btn" type="button" id="delete-all-images">Delete All ${ctx.html(titleCase(options.labelPlural))}</button>
+                    <button class="btn danger small-btn" type="button" id="delete-all-images">Delete all ${ctx.html(options.labelPlural)}</button>
                 </details>
             </div>
             <div id="image-list" class="cards"></div>
@@ -48,7 +49,7 @@ export async function mountImageLibrary(ctx, options) {
         releasePreviewUrls();
         const target = ctx.$('#image-list');
         if (!images.length) {
-            target.innerHTML = `<div class="card"><p>${ctx.html(options.emptyText)}</p></div>`;
+            target.innerHTML = `<div class="card empty-state">${ctx.html(options.emptyText)}</div>`;
             return;
         }
         target.innerHTML = images.map((image, index) => `
@@ -57,10 +58,10 @@ export async function mountImageLibrary(ctx, options) {
                     ${image.preview_url
                         ? `<img class="image-preview-img" data-preview-index="${index}" alt="${ctx.html(image.title || image.file)}">`
                         : '<div class="image-preview-missing">IMAGE</div>'}
-                    <div>
-                        <h2>${ctx.html(image.title || image.file)}</h2>
-                        <div class="image-actions">
-                            <button class="btn danger" type="button" data-image-delete="${ctx.html(image.file)}" data-image-title="${ctx.html(image.title || image.file)}">Delete</button>
+                    <div class="image-card-body">
+                        <div class="item-title-row">
+                            <h3>${ctx.html(image.title || image.file)}</h3>
+                            <button class="btn danger small-btn" type="button" data-image-delete="${ctx.html(image.file)}" data-image-title="${ctx.html(image.title || image.file)}">Delete</button>
                         </div>
                         <details class="file-details">
                             <summary>File details</summary>
@@ -106,7 +107,7 @@ export async function mountImageLibrary(ctx, options) {
             await renderCards(data.images || []);
         } catch (_) {
             ctx.setValue('#image-count', 'Could not load');
-            ctx.$('#image-list').innerHTML = `<div class="card"><p>${ctx.html(titleCase(options.labelPlural))} could not be loaded.</p></div>`;
+            ctx.$('#image-list').innerHTML = `<div class="card empty-state error-state">${ctx.html(titleCase(options.labelPlural))} could not be loaded.</div>`;
         }
     };
 
@@ -133,7 +134,7 @@ export async function mountImageLibrary(ctx, options) {
     });
 
     ctx.on('click', '#download-all-images', async (_, button) => {
-        const label = options.downloadLabel || 'Download All PNGs';
+        const label = options.downloadLabel || 'Download all PNGs';
         try {
             ctx.busy(button, true, 'Preparing download...');
             ctx.notice('Preparing image archive...', 'busy');

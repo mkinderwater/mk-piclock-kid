@@ -15,6 +15,7 @@
         <p class="small no-margin" id="lighting-runtime-details">Priority: touch, alarm, message, stories, music, bedtime, daytime.</p>
     </div>
 
+
     <form id="lighting-global-form" class="card lighting-global-card" data-module-handles-submit="true">
         <div class="card-title-row">
             <h2>Global Controls</h2>
@@ -44,7 +45,7 @@
                 <input id="lighting-touch-brightness" type="range" name="touch_blink_brightness" min="0" max="100" step="1" value="60">
             </div>
         </div>
-        <h3>Colour Calibration</h3>
+        <h3 class="section-heading">Colour calibration</h3>
         <p class="small no-margin">Adjust channel strength until white looks neutral through the installed charm.</p>
         <div class="lighting-calibration-grid">
             <div><label for="lighting-red-gain">Red <output for="lighting-red-gain">100%</output></label><input id="lighting-red-gain" type="range" name="red_gain" min="0" max="100" value="100"></div>
@@ -52,14 +53,14 @@
             <div><label for="lighting-blue-gain">Blue <output for="lighting-blue-gain">80%</output></label><input id="lighting-blue-gain" type="range" name="blue_gain" min="0" max="100" value="80"></div>
         </div>
         <div class="lighting-test-row" aria-label="LED wiring tests">
-            <button class="btn alt" type="button" data-led-test="#ff0000">Test Red</button>
-            <button class="btn alt" type="button" data-led-test="#00ff00">Test Green</button>
-            <button class="btn alt" type="button" data-led-test="#0000ff">Test Blue</button>
-            <button class="btn alt" type="button" data-led-test="#ffffff">Test White</button>
+            <button class="btn alt" type="button" data-led-test="#ff0000">Test red</button>
+            <button class="btn alt" type="button" data-led-test="#00ff00">Test green</button>
+            <button class="btn alt" type="button" data-led-test="#0000ff">Test blue</button>
+            <button class="btn alt" type="button" data-led-test="#ffffff">Test white</button>
         </div>
         <div class="lighting-actions">
-            <button class="btn alt" type="button" data-global-reset>Reset Defaults</button>
-            <button class="btn" type="submit">Save Global Controls</button>
+            <button class="btn alt" type="button" data-global-reset>Reset defaults</button>
+            <button class="btn" type="submit">Save global controls</button>
         </div>
     </form>
 

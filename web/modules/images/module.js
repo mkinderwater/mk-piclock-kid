@@ -1,8 +1,8 @@
-import {mountImageLibrary} from '/assets/js/image-library.js?v=1.8.1';
+import {mountImageLibrary} from '/assets/js/image-library.js?v=1.9.14-rpi-zero-r3';
 
 export function mount(ctx) {
     return mountImageLibrary(ctx, {
-        heading: 'Day Images',
+        heading: 'Day images',
         labelSingular: 'image',
         labelPlural: 'day images',
         description: 'Add pictures the clock can show during the day. PNG files work best.',
@@ -12,7 +12,7 @@ export function mount(ctx) {
         deleteUrl: '/api/v1/assets/images/delete',
         deleteAllUrl: '/api/v1/assets/images/delete-all',
         downloadUrl: '/api/v1/assets/images/download',
-        downloadLabel: 'Download All Day PNGs',
+        downloadLabel: 'Download all day PNGs',
         downloadFilename: 'mk-piclock-day-images-png.zip'
     });
 }
