@@ -1,4 +1,4 @@
-# mk-piclock v1.9.14-rpi-zero-r3 Pinouts
+# mk-piclock v1.9.17-rpi-zero-r3 Pinouts
 
 This document covers the Raspberry Pi GPIO header, SSD1322 OLED, MAX98357A I2S amplifier, speaker, TTP223B touch sensor, and common-cathode RGB LED used by mk-piclock.
 

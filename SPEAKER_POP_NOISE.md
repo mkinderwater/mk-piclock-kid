@@ -245,7 +245,7 @@ Therefore, the clean BPI result is not simply because the Banana Pi has better a
 
 ## Current production recommendation
 
-For `v1.9.14-rpi-zero-r3`, keep the documented production wiring:
+For `v1.9.17-rpi-zero-r3`, keep the documented production wiring:
 
 ```text
 MAX98357A SD/EN -> not connected

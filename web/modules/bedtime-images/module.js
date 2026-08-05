@@ -1,4 +1,4 @@
-import {mountImageLibrary} from '/assets/js/image-library.js?v=1.9.14-rpi-zero-r3';
+import {mountImageLibrary} from '/assets/js/image-library.js?v=1.9.17-rpi-zero-r3';
 
 export function mount(ctx) {
     return mountImageLibrary(ctx, {

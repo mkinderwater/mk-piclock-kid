@@ -4359,7 +4359,10 @@ static int diagnostic_screen_active(void) {
 static int open_diagnostic_screen(void) {
     int opened = 0;
     pthread_mutex_lock(&g_state.lock);
-    if (!g_state.alarm_active && !g_state.audio_playing && !g_state.story_playing) {
+    /* Diagnostics are a display overlay and do not need to interrupt music or
+       Story Mode. Only an active alarm blocks the screen because the first
+       responsibility of the touch sensor is to dismiss that alarm. */
+    if (!g_state.alarm_active) {
         g_state.diagnostic_return_mode = g_state.display_mode;
         if (g_state.diagnostic_return_mode < 0 || g_state.diagnostic_return_mode > 2)
             g_state.diagnostic_return_mode = 0;
@@ -4504,6 +4507,7 @@ static void *touch_thread_main(void *arg) {
     int action_consumed = 0;
     int diagnostic_opened_this_press = 0;
     int diagnostic_exit_press = 0;
+    int story_locked_hold = 0;
     int story_press_count = 0;
     uint64_t story_window_started_ms = 0;
     uint64_t now_ms = monotonic_millis();
@@ -4529,14 +4533,23 @@ static void *touch_thread_main(void *arg) {
                 update_led_scene();
             }
 
-            /* Consume every press and release until the Story Mode intro and
-               title have finished. A held sensor is also ignored on release. */
-            action_consumed = 1;
+            /* Ignore ordinary touch actions during the Story Mode intro and
+               title, but retain a continuous hold so the eight-second network
+               diagnostics gesture can complete without requiring a release and
+               second press after the title disappears. */
+            if (stable) {
+                if (pressed_ms == 0) pressed_ms = now_ms;
+                story_locked_hold = 1;
+                action_consumed = 0;
+            } else {
+                pressed_ms = 0;
+                story_locked_hold = 0;
+                action_consumed = 1;
+            }
             diagnostic_opened_this_press = 0;
             diagnostic_exit_press = 0;
             story_press_count = 0;
             story_window_started_ms = 0;
-            pressed_ms = 0;
             continue;
         }
 
@@ -4547,6 +4560,7 @@ static void *touch_thread_main(void *arg) {
             if (stable) {
                 pressed_ms = now_ms;
                 action_consumed = 0;
+                story_locked_hold = 0;
                 diagnostic_opened_this_press = 0;
                 diagnostic_exit_press = diagnostic_screen_active();
                 if (audio_is_alarm_session()) {
@@ -4561,7 +4575,7 @@ static void *touch_thread_main(void *arg) {
                     action_consumed = 1;
                     story_press_count = 0;
                     story_window_started_ms = 0;
-                } else if (diagnostic_opened_this_press || action_consumed) {
+                } else if (diagnostic_opened_this_press || action_consumed || story_locked_hold) {
                     story_press_count = 0;
                     story_window_started_ms = 0;
                 } else if (held_ms >= TOUCH_LONG_PRESS_MS) {
@@ -4605,6 +4619,7 @@ static void *touch_thread_main(void *arg) {
                 }
                 pressed_ms = 0;
                 action_consumed = 0;
+                story_locked_hold = 0;
                 diagnostic_opened_this_press = 0;
                 diagnostic_exit_press = 0;
             }
@@ -4616,6 +4631,7 @@ static void *touch_thread_main(void *arg) {
             story_window_started_ms = 0;
             if (open_diagnostic_screen()) {
                 action_consumed = 1;
+                story_locked_hold = 0;
                 diagnostic_opened_this_press = 1;
             }
         }
@@ -5273,6 +5289,9 @@ static int ipc_config_alarm(int client, const struct mp_ipc_alarm_config *reques
         alarm.last_fired_date = previous->last_fired_date;
     }
     g_state.alarms[id - 1] = alarm;
+    /* The alarm footer is derived from this schedule. Force an immediate
+       clock redraw instead of leaving stale ALARM text until the next minute. */
+    g_state.display_dirty = 1;
     pthread_mutex_unlock(&g_state.lock);
     save_config();
     app_log("alarm", "Saved alarm %d", id);

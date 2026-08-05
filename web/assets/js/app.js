@@ -19,8 +19,8 @@ let authPromise = null;
 let authResolve = null;
 let noticeTimer = null;
 const statusListeners = new Set();
-const GUI_VERSION = '1.9.14-rpi-zero-r3';
-const GUI_ASSET_VERSION = '1.9.14-rpi-zero-r3';
+const GUI_VERSION = '1.9.17-rpi-zero-r3';
+const GUI_ASSET_VERSION = '1.9.17-rpi-zero-r3';
 const REQUIRED_API_VERSION = '1.26';
 const oledPreviewIntensity = Array.from({length: 16}, (_, level) =>
     level === 0 ? 0 : Math.pow(level / 15, 0.48));
@@ -367,7 +367,6 @@ function setActiveMenu(id) {
 
 function moduleContext(controller) {
     const $ = selector => host.querySelector(selector);
-    const $$ = selector => [...host.querySelectorAll(selector)];
     const set = (selector, property, value) => {
         const node = $(selector);
         if (node) node[property] = value == null ? '' : String(value);
@@ -383,7 +382,6 @@ function moduleContext(controller) {
         root: host,
         signal: controller.signal,
         $,
-        $$,
         on,
         html: escapeHtml,
         setText: (selector, value) => set(selector, 'textContent', value),

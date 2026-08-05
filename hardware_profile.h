@@ -8,6 +8,6 @@
  * logs, and web interface so platform builds identify themselves consistently.
  */
 #define MP_PLATFORM_PROFILE "Raspberry Pi Zero W / Zero 2 W"
-#define MP_PRODUCT_VERSION "1.9.14-rpi-zero-r3"
+#define MP_PRODUCT_VERSION "1.9.17-rpi-zero-r3"
 
 #endif

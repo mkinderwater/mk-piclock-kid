@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.9.17-rpi-zero-r3 - 2026-08-04
+
+### Web module context cleanup
+
+- Removed the unused `$$` multi-element query helper from `app.js`.
+- Stopped exposing `$$` in the shared context supplied to all 11 GUI modules.
+- Preserved each module's existing direct, scoped `querySelectorAll(...)` usage.
+- Made no API or GUI behaviour changes.
+
+## 1.9.16-rpi-zero-r3 - 2026-08-04
+
+### Story Mode network diagnostics access
+
+- Allowed the eight-second touch hold to open OLED network diagnostics while music or a story is playing.
+- Preserved a continuous diagnostic hold that begins during the Story Mode intro or title.
+- Kept short or incomplete intro-time presses suppressed so they cannot stop the story or start random music.
+- Continued audio playback behind the diagnostic screen.
+- Preserved alarm priority: an active alarm must be dismissed before diagnostics can open.
+
+## 1.9.15-rpi-zero-r3 - 2026-07-27
+
+### Immediate alarm-footer refresh
+
+- Marked the OLED clock display dirty whenever an alarm is saved.
+- Turning the final enabled alarm off now removes the `ALARM` footer on the next display loop instead of waiting for the next minute redraw.
+- Alarm enable, time, and weekday changes now refresh the next-alarm footer immediately.
+
 ## 1.9.14-rpi-zero-r3 - 2026-07-24
 
 ### Full-size artwork with compact message text
@@ -687,6 +714,9 @@ The following work was completed throughout earlier v1.6 releases. Some intermed
 
 | Product | HTTP API | Private IPC | Notes |
 | --- | ---: | ---: | --- |
+| 1.9.17-rpi-zero-r3 | 1.26 | 16 | Removed unused shared `$$` GUI query helper |
+| 1.9.16-rpi-zero-r3 | 1.26 | 16 | Network diagnostics during Story Mode and audio playback |
+| 1.9.15-rpi-zero-r3 | 1.26 | 16 | Immediate OLED alarm-footer refresh after alarm changes |
 | 1.9.14-rpi-zero-r3 | 1.26 | 16 | Full-size 96x48 message artwork with compact 9px to 12px text |
 | 1.9.13-rpi-zero-r3 | 1.26 | 16 | Half-size 32x16 message artwork with X=2 alignment |
 | 1.9.12-rpi-zero-r3 | 1.26 | 16 | Restored message text geometry with 64x32 2:1 artwork and X=2 alignment |

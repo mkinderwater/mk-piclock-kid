@@ -1,17 +1,14 @@
-# mk-piclock v1.9.14-rpi-zero-r3
+# mk-piclock v1.9.17-rpi-zero-r3
 
 mk-piclock is a native C bedside alarm clock for Raspberry Pi Zero and Zero 2 W. It drives a 256x64 SSD1322 OLED, MAX98357A I2S amplifier, speaker, TTP223B touch sensor, and optional RGB LED.
 
 The project was created for my daughter Rylie. It is designed to behave like a simple bedside appliance, not a general-purpose computer.
 
-## What's new in v1.9.14-rpi-zero-r3
+## What's new in v1.9.17-rpi-zero-r3
 
-- Restored sent-message artwork to the normal 96x48 clock image size.
-- Kept the artwork aligned with the `ALARM` label at X=2.
-- Added a compact 144x48 message text viewport beside the image.
-- Limited message TrueType fonts to 9px through 12px, with scale-1 fallback text.
-- Kept the browser preview and physical OLED on the same renderer and geometry.
-- Day Images and Bedtime Images remain unchanged at their existing 2:1 GUI preview size.
+Removed the unused `$$` multi-element query helper from the shared web-module context. All 11 GUI modules already use `ctx.$(...)` or direct scoped `querySelectorAll(...)` calls, so this is a dead-code cleanup with no behavioural change.
+
+The eight-second touch hold now opens OLED network diagnostics while music or a story is playing. A hold that begins during the Story Mode intro or title also carries through to diagnostics instead of being discarded. Playback continues behind the diagnostic screen.
 
 ## Features
 
@@ -81,7 +78,7 @@ It is retained during factory reset and is not part of the user music library.
 - Ten short taps within eight seconds: play a random story when Story Mode is enabled
 - Any touch press: blink the RGB LED using the selected touch-feedback colour
 
-The music action runs only when the sensor is released. Keep holding to open diagnostics instead, so the same press cannot start music. A diagnostic hold is not counted toward Story Mode.
+The music action runs only when the sensor is released. Keep holding to open diagnostics instead, so the same press cannot start music. A diagnostic hold is not counted toward Story Mode. Diagnostics can open while music or a story continues playing, including when the hold starts during the Story Mode intro or title.
 
 Alarms cannot be dismissed from the browser. The physical touch sensor must be pressed.
 
@@ -534,7 +531,7 @@ sudo journalctl -f \
 ## Versions
 
 ```text
-Product:     1.9.14-rpi-zero-r3
+Product:     1.9.17-rpi-zero-r3
 HTTP API:    1.26
 Private IPC: 16
 ```

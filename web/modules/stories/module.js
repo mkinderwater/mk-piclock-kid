@@ -1,4 +1,4 @@
-import {audioTrackFacts} from '/assets/js/audio-library.js?v=1.9.14-rpi-zero-r3';
+import {audioTrackFacts} from '/assets/js/audio-library.js?v=1.9.17-rpi-zero-r3';
 
 export async function mount(ctx) {
     const renderStatus = status => {
